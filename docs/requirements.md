@@ -4,7 +4,6 @@
 |---|---|
 | Version | 0.1 (draft for review) |
 | Date | 2026-10-13 |
-| Related | [architecture.md](architecture.md), [implementation-guide.md](implementation-guide.md) |
 
 ## 1. Purpose
 
