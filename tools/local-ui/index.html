@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLM Extraction Bench</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b6e69'/%3E%3Cpath d='M4 5h8M4 8h8M4 11h5' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script src="vendor/mammoth.browser.min.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <div class="name">SLM Extraction Bench</div>
+      <div class="sub">Local testing only · documents stay on this machine</div>
+    </div>
+  </div>
+  <div class="conn">
+    <span id="conn-dot" class="dot" aria-hidden="true"></span>
+    <span id="conn-text">Not checked</span>
+    <button id="btn-settings" class="ghost" type="button" aria-expanded="false" aria-controls="settings">Settings</button>
+  </div>
+</header>
+
+<section id="settings" class="settings" hidden>
+  <div class="settings-grid">
+    <fieldset>
+      <legend>Send documents to</legend>
+      <label class="radio"><input type="radio" name="mode" id="mode-ollama" value="ollama" checked> Model directly (Ollama)</label>
+      <label class="radio"><input type="radio" name="mode" id="mode-api" value="api"> Platform API (after phase 0)</label>
+    </fieldset>
+    <div class="group" data-mode="ollama">
+      <label for="ollama-url">Ollama URL</label>
+      <input id="ollama-url" type="url" value="http://localhost:11434">
+      <label for="model">Model</label>
+      <input id="model" list="model-list" value="qwen3-vl:4b">
+      <datalist id="model-list"></datalist>
+      <label for="num-ctx">Context length (tokens)</label>
+      <input id="num-ctx" type="number" min="4096" step="1024" value="16384">
+    </div>
+    <div class="group" data-mode="api" hidden>
+      <label for="api-url">API URL</label>
+      <input id="api-url" type="url" value="http://localhost:8000">
+      <label for="api-key">API key (kept for this browser tab only)</label>
+      <input id="api-key" type="password" autocomplete="off" placeholder="slm_live_…">
+      <label for="wait">Wait per request (seconds, 0–40)</label>
+      <input id="wait" type="number" min="0" max="40" value="40">
+    </div>
+    <div class="group">
+      <label for="max-pages">Max pages</label>
+      <input id="max-pages" type="number" min="1" max="50" value="20">
+      <label for="max-side">Image long side (px)</label>
+      <input id="max-side" type="number" min="800" max="3000" step="100" value="1600">
+      <button id="btn-test" type="button">Test connection</button>
+    </div>
+  </div>
+</section>
+
+<main class="layout">
+  <section class="panel input" aria-labelledby="h-input">
+    <h2 id="h-input">Document</h2>
+
+    <label id="drop" class="drop" for="file">
+      <input id="file" type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+      <span class="drop-title">Drop a file here or choose one</span>
+      <span class="drop-hint">PDF (digital or scanned), DOCX, JPG, PNG</span>
+      <span id="file-name" class="file-name"></span>
+    </label>
+
+    <label for="doc-type">Document type</label>
+    <select id="doc-type"></select>
+
+    <div class="row">
+      <button id="btn-run" class="primary" type="button" disabled>Extract</button>
+      <button id="btn-stop" type="button" hidden>Stop</button>
+      <span id="timer" class="timer" aria-live="polite"></span>
+    </div>
+    <p id="stage" class="stage" aria-live="polite"></p>
+
+    <h3>Runs this session</h3>
+    <p class="muted small">Kept in memory only. Reloading the page clears them.</p>
+    <ol id="history" class="history"></ol>
+  </section>
+
+  <section class="panel output" aria-labelledby="h-output">
+    <div class="out-head">
+      <h2 id="h-output">Result</h2>
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-fields" aria-selected="true" aria-controls="view-fields">Fields</button>
+        <button role="tab" id="tab-json" aria-selected="false" aria-controls="view-json">JSON</button>
+        <button role="tab" id="tab-input" aria-selected="false" aria-controls="view-input">Model input</button>
+        <button role="tab" id="tab-info" aria-selected="false" aria-controls="view-info">Run details</button>
+      </div>
+    </div>
+
+    <div id="summary" class="summary"></div>
+    <ul id="warnings" class="warnings"></ul>
+
+    <div class="mask-row">
+      <span class="muted small">Show unmasked:</span>
+      <label class="chip"><input type="checkbox" value="pan" class="unmask"> PAN</label>
+      <label class="chip"><input type="checkbox" value="account" class="unmask"> Account no.</label>
+      <label class="chip"><input type="checkbox" value="id_number" class="unmask"> ID / UAN</label>
+      <label class="chip"><input type="checkbox" value="phone" class="unmask"> Phone</label>
+      <span class="muted small">Aadhaar is always masked.</span>
+    </div>
+
+    <div id="view-fields" role="tabpanel" class="view"></div>
+    <div id="view-json" role="tabpanel" class="view" hidden>
+      <div class="row"><button id="btn-copy" type="button">Copy JSON</button><span id="copy-msg" class="muted small"></span></div>
+      <pre id="json" class="code"></pre>
+    </div>
+    <div id="view-input" role="tabpanel" class="view" hidden></div>
+    <div id="view-info" role="tabpanel" class="view" hidden></div>
+
+    <div id="empty" class="empty">
+      <p><strong>No result yet.</strong> Choose a document and a type, then select Extract.</p>
+      <p class="muted">With the CPU model, a digital PDF takes about a minute and a scanned page a few minutes.</p>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local settings and secrets
+.env
+
+# Real documents and test data: never commit
+samples/real/
+evals/datasets/
+evals/runs/
+*.b64
+
+# Infrastructure state
+infra/**/.terraform/
+*.tfstate
+*.tfstate.*
