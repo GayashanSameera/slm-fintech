@@ -4,25 +4,25 @@ A browser page for trying document extraction on your own machine. **Local testi
 
 ## Two modes
 
-| Mode | What happens | Available |
+| Mode | What happens | Saved? |
 |---|---|---|
-| **Model directly (Ollama)** | The page prepares the document in your browser (PDF text or page images, DOCX text, resized photos), sends it to Ollama with the JSON schema, then runs the consistency checks and masking | Now |
-| **Platform API** | The page uploads the file to `POST /v1/extractions?wait=40` and calls `GET …?wait=40` again on `202` | After phase 0 is built |
+| **Local server (default)** | The page uploads the file to `POST /v1/extractions`. The FastAPI server prepares it, calls Ollama, checks and masks the result, and returns it | Yes, under `data/jobs/<job_id>/` |
+| **Model directly (Ollama)** | The page prepares the document in the browser and calls Ollama itself. Useful to see exactly what the model receives | No |
 
 ## Run
 
+The easiest way: start the API server and open http://localhost:8000. It serves this page at `/ui`.
+
 ```bash
-# 1. Ollama with the model (see docs/local-setup.md, section 3)
-docker start slm-ollama              # or the docker run command from the guide
-
-# 2. Libraries (already present after checkout; re-run to restore or verify them)
-tools/local-ui/fetch-vendor.sh
-
-# 3. Serve the page
-python3 tools/local-ui/serve.py      # http://localhost:8090
+uv run uvicorn app.asgi:app --port 8000
 ```
 
-Open http://localhost:8090, choose a file and a document type, select **Extract**.
+For "Model directly" mode without the API server, serve the page on its own:
+
+```bash
+tools/local-ui/fetch-vendor.sh       # verifies the bundled pdf.js and mammoth.js
+python3 tools/local-ui/serve.py      # http://localhost:8090
+```
 
 Ollama accepts requests from `http://localhost:*` pages by default, so no extra setting is needed.
 
@@ -46,11 +46,11 @@ Ollama accepts requests from `http://localhost:*` pages by default, so no extra 
 
 ## Data handling
 
-- Documents are read in the browser and sent only to `localhost`.
-- Results are kept in memory for the open tab only. Reloading clears them.
-- Settings are saved in the browser; the platform API key is kept for the current tab only.
+- Documents are sent only to `localhost` (the local server or Ollama).
+- The page keeps its run list in memory only; in Local server mode the server also saves each result under `data/jobs/`.
+- Settings are saved in the browser.
 
 ## Limits compared with the platform
 
-- DOCX headers and footers are not read.
-- Masking and checks run in the browser in Ollama mode; in Platform API mode the server's results are shown as returned.
+- In Model directly mode, DOCX headers and footers are not read (the server reads them).
+- In Local server mode the server does masking and checks; in Model directly mode the browser does them.

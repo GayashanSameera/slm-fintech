@@ -4,7 +4,7 @@
  * This page lets a developer upload a document and see what the AI model extracts.
  * It runs in one of two modes, chosen in Settings:
  *
- *   1. "ollama"  (works today, before the platform exists)
+ *   1. "ollama"  (browser only; nothing is saved)
  *      The browser does the same steps the platform worker will do
  *      (see docs/processing-flow.md):
  *
@@ -18,11 +18,10 @@
  *             ──► maskResult()          hide sensitive numbers (schemas.js), Aadhaar always
  *             ──► renderRun()           show fields, JSON, model input and timings
  *
- *   2. "api"  (after phase 0 is built)
- *      The browser uploads the file to the platform API (POST /v1/extractions?wait=40).
- *      The SERVER does all the steps above; this page just shows what comes back.
- *      If the API answers 202 (not finished yet), we call GET /v1/extractions/{id}?wait=40
- *      again until the job is done (requirements FR-2.14 to FR-2.16).
+ *   2. "api"  (the default: the local FastAPI server)
+ *      The browser uploads the file to POST /v1/extractions. The SERVER does all the steps
+ *      above in Python, saves the document and result under data/jobs/<job_id>/, and
+ *      returns the result in the same response.
  *
  * Nothing here is stored on disk: results live in memory for the open tab only.
  */
@@ -60,7 +59,6 @@ const MIN_TEXT_CHARS = 50;
 const MAX_PIXELS = 40_000_000;
 // Names used to remember settings in the browser between visits.
 const SETTINGS_KEY = "slm-bench-settings";
-const API_KEY_KEY = "slm-bench-api-key";
 
 // Small helper: $("id") is shorter than document.getElementById("id").
 const $ = (id) => document.getElementById(id);
@@ -90,12 +88,11 @@ const state = { file: null, runs: [], current: null, controller: null, seq: 0, t
 
 // ---------- Settings ----------
 // Settings (URLs, model name, limits) are saved in the browser's localStorage so they
-// survive a reload. The platform API key is saved in sessionStorage instead, which is
-// cleared when the tab closes, so the key does not linger on the machine.
+// survive a reload.
 // Every storage call is wrapped in try/catch: private windows can block storage, and the
 // page must still work with the defaults.
 
-const SETTING_FIELDS = ["ollama-url", "model", "num-ctx", "api-url", "wait", "max-pages", "max-side"];
+const SETTING_FIELDS = ["ollama-url", "model", "num-ctx", "api-url", "max-pages", "max-side"];
 
 function loadSettings() {
   try {
@@ -104,7 +101,6 @@ function loadSettings() {
     if (saved.mode) $(`mode-${saved.mode}`).checked = true;
     if (saved.docType && DOC_TYPES[saved.docType]) $("doc-type").value = saved.docType;
   } catch { /* storage unavailable: defaults stay */ }
-  try { $("api-key").value = sessionStorage.getItem(API_KEY_KEY) || ""; } catch { /* ignore */ }
 }
 
 function saveSettings() {
@@ -114,7 +110,6 @@ function saveSettings() {
     out.docType = $("doc-type").value;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(out));
   } catch { /* ignore */ }
-  try { sessionStorage.setItem(API_KEY_KEY, $("api-key").value); } catch { /* ignore */ }
 }
 
 const currentMode = () => document.querySelector('input[name="mode"]:checked').value;
@@ -126,7 +121,7 @@ const clampInt = (v, lo, hi, dflt) => {
 
 /**
  * Reads all settings from the form into one plain object, with every number clamped to a
- * safe range (e.g. wait 0–40 s, the same limit the platform enforces).
+ * safe range.
  * Called at the start of each run, so changes in Settings apply to the next extraction.
  */
 function settings() {
@@ -136,8 +131,6 @@ function settings() {
     model: $("model").value.trim(),
     numCtx: clampInt($("num-ctx").value, 2048, 131072, 16384),
     apiUrl: trimSlash($("api-url").value),
-    apiKey: $("api-key").value.trim(),
-    wait: clampInt($("wait").value, 0, 40, 40),
     maxPages: clampInt($("max-pages").value, 1, 50, 20),
     maxSide: clampInt($("max-side").value, 800, 3000, 1600),
   };
@@ -539,67 +532,40 @@ async function callOllama(s, typeKey, prepared, signal) {
   return { data, raw: content, stats, notes, userText };
 }
 
-// ---------- Platform API call ----------
-
-/** Waits `ms` milliseconds, but stops immediately if the user presses Stop. */
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => { clearTimeout(t); reject(new DOMException("Stopped", "AbortError")); }, { once: true });
-  });
-}
+// ---------- Local server call ----------
 
 /**
- * Platform API mode: the same thing a tenant's system will do.
+ * Local server mode: upload the file to the FastAPI server.
  *
- *   POST /v1/extractions?wait=40   (multipart: document_type + file)
- *     200 → finished within 40 s, the body contains the result
- *     202 → not finished yet, the body contains the job id
- *   GET /v1/extractions/{id}?wait=40   repeated while the answer is 202
+ *   POST /v1/extractions   (multipart form: document_type + file)
  *
- * Outside business hours (Mon–Fri 09:00–19:00 IST in AWS) the API answers 202 with
- * `processing_starts_at`. We stop there instead of asking every 40 s all night.
- * The API key is sent as "Authorization: Bearer <key>"; the server works out the tenant
- * from the key (FR-1.2). Masking and checks were already done by the server.
+ * The server prepares the document, calls the model, checks and masks the result, saves
+ * everything under data/jobs/<job_id>/ and answers with the job record + result:
+ *   200 + status "succeeded"   result is in the body
+ *   200 + status "failed"      error.code says why (e.g. model_unavailable)
+ *   4xx                        the upload itself was rejected (e.g. unsupported_file_type)
+ * Masking and checks were already done by the server.
  */
 async function callApi(s, typeKey, file, signal, stage) {
-  if (!s.apiKey) throw new ExtractionError("unauthorized", "Enter an API key in Settings.");
-  const headers = { Authorization: `Bearer ${s.apiKey}` };
-  let res;
-  let body;
-  const send = async (url, init) => {
-    try {
-      res = await fetch(url, { ...init, signal });
-    } catch (e) {
-      if (e.name === "AbortError") throw e;
-      throw new ExtractionError("api_unavailable", `Could not reach the API at ${s.apiUrl}. Is the platform running, and does it allow this page's origin (CORS)?`);
-    }
-    body = await res.json().catch(() => ({}));
-  };
-
   const form = new FormData();
   form.append("document_type", typeKey);
   form.append("file", file, file.name);
-  stage(s.wait ? `Uploading; the API waits up to ${s.wait} s for the result` : "Uploading");
-  await send(`${s.apiUrl}/v1/extractions?wait=${s.wait}`, { method: "POST", headers, body: form });
-
-  let calls = 1;
-  while (res.status === 202) {
-    if (body.processing_starts_at) {
-      throw new ExtractionError("outside_business_hours", `Queued as ${body.id}. Processing starts at ${body.processing_starts_at}.`);
-    }
-    if (s.wait === 0) await sleep(2000, signal);
-    calls += 1;
-    stage(`Job ${body.id} is ${body.status}; asking again (call ${calls})`);
-    await send(`${s.apiUrl}/v1/extractions/${encodeURIComponent(body.id)}?wait=${s.wait}`, { headers });
+  stage("Uploading; the server is extracting (this can take minutes on CPU)");
+  let res;
+  try {
+    res = await fetch(`${s.apiUrl}/v1/extractions`, { method: "POST", body: form, signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+    throw new ExtractionError("api_unavailable", `Could not reach the server at ${s.apiUrl}. Is it running?`);
   }
+  const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new ExtractionError(body?.error?.code || `http_${res.status}`, body?.error?.message || `The API returned HTTP ${res.status}.`);
+    throw new ExtractionError(body?.error?.code || `http_${res.status}`, body?.error?.message || `The server returned HTTP ${res.status}.`);
   }
   if (body.status === "failed") {
-    throw new ExtractionError(body.error?.code || "failed", body.error?.message || "The job failed.", { job: body });
+    throw new ExtractionError(body.error?.code || "failed", body.error?.message || "The extraction failed.", { job: body });
   }
-  return { data: body.result ?? {}, warnings: body.warnings ?? [], job: body, calls };
+  return { data: body.result ?? {}, warnings: body.warnings ?? [], job: body };
 }
 
 // ---------- Run ----------
@@ -627,7 +593,7 @@ async function run() {
     fileSize: file.size,
     type: typeKey,
     mode: s.mode,
-    model: s.mode === "ollama" ? s.model : "platform API",
+    model: s.mode === "ollama" ? s.model : "local server",
     startedAt: new Date(),
     status: "running",
     warnings: [],
@@ -668,7 +634,7 @@ async function run() {
       rec.warnings = consistencyWarnings(typeKey, out.data);
     } else {
       const out = await callApi(s, typeKey, file, controller.signal, stage);
-      Object.assign(rec, { data: out.data, job: out.job, calls: out.calls, serverMasked: true });
+      Object.assign(rec, { data: out.data, job: out.job, serverMasked: true });
       rec.warnings = out.warnings;
     }
     rec.status = rec.warnings.length ? "warnings" : "ok";
@@ -681,6 +647,7 @@ async function run() {
       rec.error = { code: e?.code || "error", message: e?.message || String(e) };
       if (e?.raw !== undefined) rec.raw = e.raw;
       if (e?.stats) rec.stats = e.stats;
+      if (e?.job) rec.job = e.job;
     }
   } finally {
     rec.seconds = (performance.now() - started) / 1000;
@@ -851,7 +818,7 @@ function renderRun(r) {
     $("view-fields").append(el("p", { class: "muted", text: "No fields to show." }));
   }
   if (r.serverMasked) {
-    $("view-fields").prepend(el("p", { class: "muted small", text: "Masking was applied by the platform; the Show unmasked options have no effect here." }));
+    $("view-fields").prepend(el("p", { class: "muted small", text: "Masking was applied by the server (set SLM_UNMASK_FIELDS to change it); the Show unmasked options have no effect here." }));
   }
 
   // Model input
@@ -870,7 +837,8 @@ function renderRun(r) {
       input.append(el("h3", { text: "Images sent to the model" }), thumbs);
     }
   } else if (r.mode === "api") {
-    input.append(el("p", { class: "muted", text: "In Platform API mode the server prepares the document, so the model input is not visible here." }));
+    if (r.job?.route) input.append(el("p", {}, el("b", { text: "Route: " }), r.job.route));
+    input.append(el("p", { class: "muted", text: "The server prepared the document, so the exact text and images it sent are not shown here. Use 'Model directly' mode to see them." }));
   } else {
     input.append(el("p", { class: "muted", text: "The document was not prepared." }));
   }
@@ -879,7 +847,7 @@ function renderRun(r) {
   const info = $("view-info");
   const dl = el("dl", { class: "kv" });
   const row = (k, v) => { if (v !== undefined && v !== null && v !== "") dl.append(el("dt", { text: k }), el("dd", { text: String(v) })); };
-  row("Mode", r.mode === "ollama" ? "Model directly (Ollama)" : "Platform API");
+  row("Mode", r.mode === "ollama" ? "Model directly (Ollama)" : "Local server (FastAPI)");
   row("Model", r.stats?.model ?? r.model);
   row("File size", `${(r.fileSize / 1024).toFixed(0)} KB`);
   row("Started", r.startedAt.toLocaleString());
@@ -895,8 +863,13 @@ function renderRun(r) {
   }
   if (r.job) {
     row("Job", r.job.id);
+    row("Saved in", `data/jobs/${r.job.id}/`);
     row("Schema version", r.job.schema_version);
-    row("API calls", r.calls);
+    row("Model", r.job.model);
+    row("Preparing the file", r.job.prepare_ms != null ? `${(r.job.prepare_ms / 1000).toFixed(1)} s` : null);
+    row("Model time", r.job.model_ms != null ? `${(r.job.model_ms / 1000).toFixed(1)} s` : null);
+    row("Input tokens", r.job.input_tokens);
+    row("Output tokens", r.job.output_tokens);
   }
   info.append(dl);
   if (r.raw !== undefined && r.status === "failed") {
@@ -913,7 +886,7 @@ function renderRun(r) {
  * Checks the selected backend and shows the result in the top bar.
  *   Ollama: GET /api/tags lists downloaded models; we also check the chosen model is there
  *           and fill the Model suggestions list.
- *   API:    GET /healthz.
+ *   Server: GET /healthz.
  * Runs once when the page opens and whenever the mode changes.
  */
 async function testConnection() {
@@ -937,11 +910,11 @@ async function testConnection() {
     } else {
       const res = await fetch(`${s.apiUrl}/healthz`);
       dot.className = res.ok ? "dot ok" : "dot bad";
-      text.textContent = res.ok ? "Platform API reachable" : `Platform API returned HTTP ${res.status}`;
+      text.textContent = res.ok ? "Local server ready" : `Local server returned HTTP ${res.status}`;
     }
   } catch {
     dot.className = "dot bad";
-    text.textContent = s.mode === "ollama" ? `Cannot reach Ollama at ${s.ollamaUrl}` : `Cannot reach the API at ${s.apiUrl}`;
+    text.textContent = s.mode === "ollama" ? `Cannot reach Ollama at ${s.ollamaUrl}` : `Cannot reach the server at ${s.apiUrl}`;
   }
 }
 
@@ -968,6 +941,9 @@ function init() {
   const select = $("doc-type");
   for (const [key, def] of Object.entries(DOC_TYPES)) select.append(el("option", { value: key, text: def.label }));
   loadSettings();
+  // When this page is served by the FastAPI server itself (http://localhost:8000/ui/), the
+  // server URL is simply this page's own address.
+  if (location.pathname.startsWith("/ui")) $("api-url").value = location.origin;
   showModeFields();
 
   $("btn-settings").addEventListener("click", () => {
@@ -978,7 +954,7 @@ function init() {
   for (const r of document.querySelectorAll('input[name="mode"]')) {
     r.addEventListener("change", () => { showModeFields(); saveSettings(); testConnection(); });
   }
-  for (const id of [...SETTING_FIELDS, "api-key", "doc-type"]) $(id).addEventListener("change", saveSettings);
+  for (const id of [...SETTING_FIELDS, "doc-type"]) $(id).addEventListener("change", saveSettings);
   $("btn-test").addEventListener("click", testConnection);
 
   $("file").addEventListener("change", (e) => setFile(e.target.files[0]));

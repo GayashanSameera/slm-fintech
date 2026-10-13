@@ -10,7 +10,7 @@
 This guide has two parts:
 
 - **Part A works today.** It sets up the tools and runs the AI model on your own machine, so you can try extraction on real documents before any platform code exists.
-- **Part B runs the whole platform** (API, worker, emulated AWS, model) with Docker Compose. It applies once phase 0 of the [implementation guide](implementation-guide.md) is built.
+- **Part B runs the proof of concept**: the FastAPI server, the model and the test UI on your machine. No AWS, no login.
 
 Nothing in this guide needs an AWS account, a GPU or an internet connection after the downloads. Documents never leave your machine.
 
@@ -321,222 +321,136 @@ These numbers show where the 4B model is weak before we spend money on GPU tests
 
 ---
 
-# Part B: Run the full platform locally (after phase 0 is built)
+# Part B: Run the proof of concept (FastAPI + model)
 
 ## 9. What runs
 
 ```mermaid
 flowchart LR
-  DEV["You: curl, Postman, pytest"] -->|":8000"| API["api<br/>FastAPI (uvicorn)"]
-  API --> AWS[("aws · moto :5000<br/>DynamoDB, S3, SQS, STS")]
-  WK["worker"] --> AWS
-  WK -->|":11434"| OL["ollama<br/>qwen3-vl:4b"]
-  INIT["init (one-off)"] --> AWS
+  UI["Browser: SLM Extraction Bench<br/>http://localhost:8000/ui"] -->|"upload one file"| API["FastAPI server<br/>uvicorn :8000"]
+  API -->|"text / page images + schema"| OL["Ollama :11434<br/>qwen3-vl:4b on CPU"]
+  API --> DATA[("./data/jobs/&lt;job_id&gt;/<br/>input.* · result.json · job.json")]
 ```
 
-| Service | Port | Role |
+| Part | Where | Role |
 |---|---|---|
-| `aws` | 5000 | moto server: emulates DynamoDB, S3, SQS and STS in memory |
-| `api` | 8000 | The REST API, reloads when code changes |
-| `worker` | — | Takes jobs from the queue and runs the pipeline |
-| `ollama` | 11434 | The model (same as Part A) |
-| `init` | — | Creates the table, bucket, queues and a demo tenant, prints an API key |
+| Ollama + qwen3-vl:4b | Docker container | Runs the AI model |
+| FastAPI server | Your machine (`uv run`) | Prepares the file, calls the model, validates, checks, masks, saves |
+| Test UI | Served by the same server at `/ui` | Upload a document, see the result |
+| `./data/jobs/` | Your disk | One folder per document: the file, the JSON result and the job record |
+
+No AWS, no queue and no login: this is a local proof of concept. The server listens on `127.0.0.1` only.
 
 ## 10. First run
 
-Stop the Part A container first, or the ports clash. The model download is kept in the `slm-ollama` volume only if you reuse it (see the note below).
+The quickest way is one command, which does everything below:
 
 ```bash
-docker stop slm-ollama && docker rm slm-ollama
+./start.sh
 ```
 
+How the parts fit together is explained in [local-poc.md](local-poc.md). The same steps by hand:
+
 ```bash
-git clone <repository-url> slm-fintech
 cd slm-fintech
+cp .env.example .env                       # local settings (no secrets)
+uv sync                                    # Python dependencies
 
-cp .env.example .env               # local settings; no real secrets
-uv sync                            # Python dependencies for tests and scripts
-docker compose build
-docker compose up -d               # aws, api, worker, ollama
-docker compose exec ollama ollama pull qwen3-vl:4b
-docker compose --profile init run --rm init
+docker compose up -d ollama                # start the model server
+docker compose exec ollama ollama pull qwen3-vl:4b   # once, 3.3 GB
+
+uv run uvicorn app.asgi:app --port 8000    # start the API
 ```
 
-`init` prints something like:
+Open http://localhost:8000. The top bar should say **Local server ready**. Drop a document, choose its type and select **Extract**.
 
-```text
-Created table slm-fintech, bucket slm-fintech-docs, queues slm-fintech-jobs-interactive,
-slm-fintech-jobs-background, slm-fintech-jobs-dlq, slm-fintech-events
-Tenant: tnt_demo
-API key (shown once): slm_live_3fQ...
-```
+If you already started Ollama with the `docker run` command in section 3, skip `docker compose up -d ollama`: both use the same `slm-ollama` model volume, but only one can use port 11434.
 
-Save the key for this session:
-
-```bash
-export KEY=slm_live_3fQ...
-curl -s localhost:8000/healthz      # {"status":"ok"}
-```
-
-Note: to reuse the model already downloaded in Part A, set the compose `ollama` volume to `slm-ollama` with `external: true`.
-
-## 11. Choose the model mode
+## 11. Model settings
 
 In `.env`:
 
-| Mode | Settings | Use |
+| Setting | Default | Meaning |
 |---|---|---|
-| Fake model (fast) | `SLM_MODEL_PROVIDER=fake` | Developing API and worker code; a job finishes in under a second with empty fields |
-| Real model | `SLM_MODEL_PROVIDER=openai_compatible`<br/>`SLM_MODEL_BASE_URL=http://ollama:11434/v1`<br/>`SLM_MODEL_NAME=qwen3-vl:4b`<br/>`SLM_MODEL_TIMEOUT_S=600` | Checking extraction end to end |
+| `SLM_MODEL_PROVIDER` | `openai_compatible` | `fake` returns empty results instantly (try the flow without a model) |
+| `SLM_MODEL_BASE_URL` | `http://localhost:11434/v1` | Ollama's OpenAI-compatible API |
+| `SLM_MODEL_NAME` | `qwen3-vl:4b` | Any vision model pulled into Ollama |
+| `SLM_MODEL_TIMEOUT_S` | `900` | CPU is slow; scans can take minutes |
+| `SLM_UNMASK_FIELDS` | empty | Show `pan`, `account`, `id_number`, `phone` in full (comma-separated). Aadhaar is always masked |
+| `SLM_DATA_DIR` | `./data` | Where documents and results are saved |
 
-After changing `.env`:
+Restart the server after changing `.env`.
+
+## 12. Use the API directly
+
+The UI uses these same endpoints. Interactive docs: http://localhost:8000/docs
 
 ```bash
-docker compose up -d api worker
+# extract (waits until the model finishes, then returns the job + result)
+curl -s -F document_type=payslip -F file=@payslip.pdf localhost:8000/v1/extractions | jq .
+
+# one job again, recent jobs, delete
+curl -s localhost:8000/v1/extractions/<job_id> | jq .
+curl -s "localhost:8000/v1/extractions?limit=10" | jq '.[] | {id, status, document_type}'
+curl -s -X DELETE localhost:8000/v1/extractions/<job_id> -w "%{http_code}\n"
+
+# supported types and their schemas
+curl -s localhost:8000/v1/document-types | jq '.[].name'
 ```
 
-## 12. Use the API
+Response statuses:
 
-List document types:
+| Response | Meaning |
+|---|---|
+| `200`, `"status": "succeeded"` | `result` holds the extracted JSON; `warnings` lists failed consistency checks |
+| `200`, `"status": "failed"` | `error.code` says why, e.g. `model_unavailable`, `encrypted_pdf`, `too_many_pages` |
+| `400` / `413` / `415` | The upload was rejected: unknown type, too large, not a PDF/DOCX/JPG/PNG |
 
-```bash
-curl -s -H "Authorization: Bearer $KEY" localhost:8000/v1/document-types | jq '.data[].name'
+## 13. What is saved
+
+```
+data/jobs/job_01k7f3w2g5x8c9v0b1n2m3q4r5/
+├── input.pdf      the uploaded file (named by its real type; the original name is not kept)
+├── result.json    the extracted JSON, masked
+└── job.json       status, route taken, pages, warnings, model, token counts, timings
 ```
 
-Upload and wait for the result (up to 40 s):
+`data/` is in `.gitignore`. Delete a job with the API or simply delete its folder.
+
+## 14. Watch what happens
+
+The server prints one JSON line per request and per extraction: ids, status, pages and timings. Document content is never logged.
 
 ```bash
-curl -s -H "Authorization: Bearer $KEY" \
-  -F document_type=payslip -F file=@samples/payslip.jpg \
-  -w "\nHTTP %{http_code}\n" \
-  localhost:8000/v1/extractions
+docker compose logs -f ollama        # model loading and requests
+docker stats                         # memory and CPU used by Ollama
 ```
 
-- `HTTP 200`: the response contains `result`.
-- `HTTP 202`: still processing. With the CPU model this is normal for anything but small text documents. Note the `id` and call again:
+## 15. Run the tests
+
+Tests use a temporary folder and a fake model, so they need neither Docker nor Ollama:
 
 ```bash
-JOB=job_01jz...
-curl -s -H "Authorization: Bearer $KEY" \
-  "localhost:8000/v1/extractions/$JOB?wait=40" | jq .
-```
-
-Larger files (presigned upload):
-
-```bash
-curl -s -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"document_type":"bank_statement","content_type":"application/pdf"}' \
-  localhost:8000/v1/extractions/uploads | tee /tmp/upload.json
-
-curl -s -X PUT -H "Content-Type: application/pdf" \
-  --upload-file samples/statement.pdf "$(jq -r .upload_url /tmp/upload.json)"
-
-curl -s -X POST -H "Authorization: Bearer $KEY" \
-  "localhost:8000/v1/extractions/$(jq -r .id /tmp/upload.json)/submit" | jq .
-```
-
-Other calls:
-
-```bash
-# list jobs
-curl -s -H "Authorization: Bearer $KEY" "localhost:8000/v1/extractions?limit=10" | jq .
-
-# send a correction
-curl -s -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"corrections":[{"field":"net_pay","value":"48250.00"}]}' \
-  localhost:8000/v1/extractions/$JOB/corrections
-
-# delete a job and its files
-curl -s -X DELETE -H "Authorization: Bearer $KEY" localhost:8000/v1/extractions/$JOB -w "%{http_code}\n"
-
-# chat (reserved): returns 501
-curl -s -X POST -H "Authorization: Bearer $KEY" localhost:8000/v1/chat/sessions
-```
-
-Interactive API docs are at http://localhost:8000/docs when `SLM_ENV=local`.
-
-### Test UI against the platform
-
-The same test UI works with the running platform:
-
-1. `python3 tools/local-ui/serve.py` and open http://localhost:8090.
-2. **Settings → Send documents to → Platform API**, enter the API key from `init`, keep URL `http://localhost:8000`.
-3. Upload and extract. The page calls `POST /v1/extractions?wait=40` and, on `202`, `GET /v1/extractions/{id}?wait=40` until the job finishes.
-
-The API must allow the page's origin: `SLM_CORS_ORIGINS=http://localhost:8090` in `.env` (local only).
-
-## 13. Watch what happens
-
-```bash
-docker compose logs -f worker          # job picked up, pages, timings, status
-docker compose logs -f api
-docker stats                           # memory and CPU per container
-```
-
-Logs show job IDs, codes and timings only, never document content. This is intended.
-
-Look inside the emulated AWS (needs the AWS CLI; any dummy credentials work):
-
-```bash
-export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=ap-south-1
-aws --endpoint-url http://localhost:5000 dynamodb scan --table-name slm-fintech --max-items 5
-aws --endpoint-url http://localhost:5000 s3 ls s3://slm-fintech-docs/ --recursive
-aws --endpoint-url http://localhost:5000 sqs get-queue-attributes \
-  --queue-url http://localhost:5000/123456789012/slm-fintech-jobs-interactive \
-  --attribute-names ApproximateNumberOfMessages
-```
-
-## 14. Run the tests
-
-Tests use moto inside the test process and the fake model, so they need neither Docker nor Ollama:
-
-```bash
-uv run pytest                       # all tests
-uv run pytest tests/test_isolation.py -v
+uv run pytest                        # 65 tests
 uv run ruff check .
 ```
 
-## 15. Try business hours
-
-Business hours are off locally so jobs run at any time. To see the behaviour:
+## 16. Optional: run the API in Docker too
 
 ```bash
-# .env
-SLM_ENFORCE_BUSINESS_HOURS=true
+docker compose --profile api up -d --build    # Ollama + API; open http://localhost:8000
 ```
+
+Files still appear in `./data` on your machine.
+
+## 17. Stop and reset
 
 ```bash
-docker compose up -d api worker
+# Ctrl+C stops the API
+docker compose stop ollama           # stop the model (keeps the download)
+rm -rf data/                         # delete all saved documents and results
+docker volume rm slm-ollama          # delete the model (3.3 GB re-download)
 ```
-
-Outside Mon–Fri 09:00–19:00 IST, uploads return `202` at once with `processing_starts_at`, and the worker leaves jobs in the queue.
-
-## 16. Stop, restart, reset
-
-```bash
-docker compose stop                 # stop, keep containers
-docker compose start                # start again
-docker compose down                 # remove containers
-docker compose down -v              # also delete the model volume (3.3 GB re-download)
-```
-
-moto keeps data in memory. After `down` or a restart of the `aws` service, run `init` again and use the new API key.
-
-## 17. Running the API outside Docker (faster code changes)
-
-```bash
-docker compose up -d aws ollama
-docker compose --profile init run --rm init
-
-export $(grep -v '^#' .env | xargs)
-export SLM_AWS_ENDPOINT_URL=http://localhost:5000
-export SLM_MODEL_BASE_URL=http://localhost:11434/v1
-
-uv run uvicorn app.asgi:app --reload --port 8000             # terminal 1
-uv run python -m app.modules.extraction.worker               # terminal 2
-```
-
-This needs Python 3.12 and, for DOCX tests, nothing extra (python-docx is a Python package).
 
 ## 18. Using a GPU (optional)
 
@@ -561,8 +475,6 @@ docker run -d --gpus all -p 8001:8000 vllm/vllm-openai:v0.11.0 \
 | Ollama container killed, or machine very slow | Not enough free RAM | Close other apps, use `qwen3-vl:2b`, keep `OLLAMA_NUM_PARALLEL=1` |
 | Output is `{}` or fields all null | Context too small for images | Check `OLLAMA_CONTEXT_LENGTH=16384`; shrink images to 1,600 px |
 | Request times out | CPU inference is slow | Raise `SLM_MODEL_TIMEOUT_S`; use the fake provider for non-model work |
-| Always `202` from the API | Model slower than 40 s on CPU | Expected locally; call `GET …?wait=40` |
-| `401 unauthorized` after restart | moto lost its data | Run `init` again and use the new key |
 | `jq: Argument list too long` | Images passed as shell arguments | Use `--rawfile` or the Python request builder |
 
 ## 20. Data safety on your machine

@@ -2,6 +2,7 @@
 
 | Document | What it covers |
 |---|---|
+| [local-poc.md](local-poc.md) | **Start here for the local proof of concept**: how it runs, one document end to end, code map |
 | [requirements.md](requirements.md) | Scope, functional and non-functional requirements, acceptance criteria |
 | [architecture.md](architecture.md) | System design, AWS layout, data model, security, models, decisions |
 | [processing-flow.md](processing-flow.md) | End-to-end flow of one document, with the path for each file type |

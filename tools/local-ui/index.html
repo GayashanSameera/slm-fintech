@@ -29,10 +29,10 @@
   <div class="settings-grid">
     <fieldset>
       <legend>Send documents to</legend>
-      <label class="radio"><input type="radio" name="mode" id="mode-ollama" value="ollama" checked> Model directly (Ollama)</label>
-      <label class="radio"><input type="radio" name="mode" id="mode-api" value="api"> Platform API (after phase 0)</label>
+      <label class="radio"><input type="radio" name="mode" id="mode-api" value="api" checked> Local server (FastAPI) — saves files in ./data</label>
+      <label class="radio"><input type="radio" name="mode" id="mode-ollama" value="ollama"> Model directly (Ollama) — browser only, nothing saved</label>
     </fieldset>
-    <div class="group" data-mode="ollama">
+    <div class="group" data-mode="ollama" hidden>
       <label for="ollama-url">Ollama URL</label>
       <input id="ollama-url" type="url" value="http://localhost:11434">
       <label for="model">Model</label>
@@ -41,19 +41,17 @@
       <label for="num-ctx">Context length (tokens)</label>
       <input id="num-ctx" type="number" min="4096" step="1024" value="16384">
     </div>
-    <div class="group" data-mode="api" hidden>
-      <label for="api-url">API URL</label>
+    <div class="group" data-mode="api">
+      <label for="api-url">Server URL</label>
       <input id="api-url" type="url" value="http://localhost:8000">
-      <label for="api-key">API key (kept for this browser tab only)</label>
-      <input id="api-key" type="password" autocomplete="off" placeholder="slm_live_…">
-      <label for="wait">Wait per request (seconds, 0–40)</label>
-      <input id="wait" type="number" min="0" max="40" value="40">
     </div>
-    <div class="group">
+    <div class="group" data-mode="ollama" hidden>
       <label for="max-pages">Max pages</label>
       <input id="max-pages" type="number" min="1" max="50" value="20">
       <label for="max-side">Image long side (px)</label>
       <input id="max-side" type="number" min="800" max="3000" step="100" value="1600">
+    </div>
+    <div class="group">
       <button id="btn-test" type="button">Test connection</button>
     </div>
   </div>
@@ -118,7 +116,7 @@
 
     <div id="empty" class="empty">
       <p><strong>No result yet.</strong> Choose a document and a type, then select Extract.</p>
-      <p class="muted">With the CPU model, a digital PDF takes about a minute and a scanned page a few minutes.</p>
+      <p class="muted">With the CPU model, a digital PDF takes about a minute and a scanned page a few minutes. Results are saved under <code>data/jobs/</code>.</p>
     </div>
   </section>
 </main>
