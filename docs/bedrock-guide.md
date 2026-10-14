@@ -382,6 +382,17 @@ Newer Claude models can **think** before answering: they write hidden reasoning,
 - For a normal extraction we **turn thinking off**: the task is reading, not puzzling.
 - On the **retry** after a failed check we turn it **on**, because then the model must work out what it got wrong (architecture §6).
 
+**Confirmed on real Bedrock (2026-10-14).** The request format differs per model, and getting it wrong fails every call with `ValidationException`. `app/gateway/bedrock.py build_request` encodes these rules, and `tests/unit/test_bedrock_request.py` pins them:
+
+| | Claude Haiku 5.5 | Claude Sonnet 5.5 | Amazon Nova Lite |
+|---|---|---|---|
+| Thinking off | `{"type": "disabled"}` (`between_tools` is rejected) | `{"type": "between_tools"}` (`disabled` is rejected) | no thinking field |
+| Thinking on (retries) | `{"type": "adaptive"}` | `{"type": "adaptive"}` | n/a |
+| `temperature` | **rejected** ("deprecated for this model") | not sent | `0`, for repeatable answers |
+| Prompt cache | `cachePoint` after the system prompt (cache reads confirmed) | same | not sent |
+
+Before the first Claude call in an account, an admin must submit Anthropic's **use-case form** (Bedrock console banner) and call each model once, which creates the Marketplace subscription. Until then every call fails with `AccessDeniedException`, mentioning AWS Marketplace actions.
+
 ### 10.3 Structured outputs
 
 Some models on Bedrock can be *forced* to return JSON matching a schema. **Haiku 5.5 on Bedrock does not support this yet.** So we ask for JSON in the prompt, then validate it ourselves with Pydantic, and retry once if it is invalid. When AWS adds support, we switch it on in the model gateway.

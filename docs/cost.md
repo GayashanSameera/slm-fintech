@@ -88,7 +88,7 @@ Anthropic documents a 10% premium for geographic routing over global routing, so
 | Output, bank statement page (~30 transactions) | ~1,200 |
 | Output, invoice / payslip / identity / KYC page | ~450 / 350 / 200 / 300 |
 | **Weighted average output** (statement-heavy mix) | **~945** |
-| **Verification by Nova Lite** | page + parser JSON in (~3,575 for a statement page), ~60 out (disagreements only) |
+| **Verification by Nova Lite** | statement page images in (~2,500 for 1 page, ~5,000 for 2), ~150 out (the key facts it reads; the parser's output is not sent). Measured: USD 0.0002–0.0003 per statement |
 
 ## 4. Base case in detail: 22,000 pages a month
 
@@ -117,12 +117,14 @@ Every resource in `infra/cloudformation/` priced with its real settings. Workloa
 | CloudWatch (`app.yaml`, `observability.yaml`) | 6 alarms × USD 0.10; ~0.3 GB of logs; 1 dashboard (free up to 3 per account) | 0.81 |
 | SQS (`app.yaml`) | Lambda long-polls 3 queues **even when idle** (~1.9 M requests a month; first 1 M free) | 0.40 |
 | DynamoDB (`data.yaml`) | ~50 write + ~35 read units per document, ~0.2 GB stored, PITR; stream reads by Lambda are free | 0.27 |
-| ECR (`data.yaml`) | ~1 GB of images (last 10 kept; layers shared) | 0.10 |
+| Code bucket (`data.yaml`) | Lambda zip packages, ~48 MB each, expire after 90 days | 0.05 |
 | S3 documents bucket (`data.yaml`) | PUT/GET requests; files are deleted after processing, so storage is near zero | 0.10 |
 | API Gateway REST (`app.yaml`) | ~16,500 requests at USD 3.50 per million | 0.06 |
 | CloudTrail (`security.yaml`) | Management events: the first trail is free; ~1 GB of log files in S3 | 0.05 |
 | Lambda (`app.yaml`) | ~330,000 GB-seconds (worker ~20 s at 2 GB per document, API wait ~20 s at 1 GB) | 4.46 |
 | EventBridge, Scheduler, SNS, Budgets | AWS service events and the first 14 M schedule runs are free; email alerts free; first 2 budgets free | 0.00 |
+| Web console (`web.yaml`) | CloudFront (free tier: 1 TB and 10 M requests a month) + a ~0.2 MB private S3 bucket | ~0.00 |
+| Client API keys in Secrets Manager (`--secret-name`, optional) | USD 0.40 per stored key (e.g. `slm/prod/api-keys/lynear`) | 0.40 each |
 | **Infrastructure total (gross)** | | **USD 19.99** |
 | Lambda always-free tier (400,000 GB-s and 1 M requests a month) | | −4.46 |
 | **Infrastructure total (net)** | | **USD 15.53** |

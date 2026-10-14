@@ -11,7 +11,7 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 | Environments | `dev` and `prod` (four stacks each), ideally in **separate AWS accounts** |
 | Cost | ~USD 20/month infrastructure in prod at 1,000 pages per business day; ~USD 5 for dev (section 6) |
 | First tenant | **LYNEAR** (section 8.3) |
-| How the code uses these resources | [docs/implementation-flow.md](../../docs/implementation-flow.md), stage by stage |
+| How the code uses these resources | [docs/implementation-flow.md](../../docs/implementation-flow.md) (stage by stage) and [docs/execution-flow.md](../../docs/execution-flow.md) (call by call) |
 
 ---
 

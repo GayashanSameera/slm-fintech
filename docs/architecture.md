@@ -111,19 +111,23 @@ That makes them ideal for deterministic Python parsing. **Rung 0** sits below th
 2. **Parse.** The parser reads words with their page positions (pdfplumber):
    - header fields are found next to their labels (account holder, account number, IFSC, period, opening balance);
    - transactions are read by column x-ranges, and descriptions that wrap onto several lines are joined.
-3. **Deterministic checks.** These are the same consistency checks as the AI path (FR-3.2), plus **coverage checks**:
-   - every page produced rows or a known "no transactions" marker;
-   - no unparsed amount-like text is left in the table area;
-   - the row count matches the number of date-like lines;
-   - the last balance equals the closing balance.
+3. **Deterministic checks** (`checks.py`, `parsers/coverage.py`). These are the same consistency checks as the AI path (FR-3.2), plus **coverage checks**:
+   - the parsed row count equals the number of date-led lines in the page text;
+   - the last row's balance equals the stated closing balance;
+   - account number, IFSC, period and opening/closing balance were all found.
+4. **Text reconciliation** (`parsers/reconcile.py`, added 2026-10-14 because statement rows are reconciled with real transactions downstream). The PDF text, read by a **different library** (pypdfium2, while the parser uses pdfplumber), must confirm **every row and every field** in order:
+   - the row's date;
+   - exactly its set of amounts (debit or credit, and balance), with nothing missing or extra;
+   - its reference;
+   - its description (wrapped lines allowed).
 
-   Any failure → the parser result is discarded and the document goes to the AI ladder.
-4. **AI verification.** The page images and the parser's JSON go to **Nova Lite** with one instruction: *compare the JSON with the document and list only the fields that differ*. The answer is either `{"agree": true}` or `{"agree": false, "issues": [{"path": "header.account_holder", "document_value": "…"}]}`, so output stays at ~60 tokens. Long statements are verified in parallel page groups (§6.3).
+   The header fields must be printed in the document too. No AI is involved. The text layer can't show which *column* an amount sits in, but a debit/credit swap breaks the running-balance check.
+5. **AI verification: read independently, compare in code** (`parsers/verify.py`). Nova Lite gets **all page images**, but **not** the parser's output, and reads the key facts itself: holder, account number, IFSC, branch, period, first and last transaction (date and description). Code compares them with the parser result, after normalising case, spaces and date formats. Any mismatch, or a required field it couldn't read, rejects the result. The answer is ~150 tokens whatever the statement's length (~USD 0.0002–0.0003 per statement), at temperature 0.
 
-   The verifier mainly guards what arithmetic cannot prove: names, account number, IFSC, dates and descriptions. For example, a balance check cannot tell whether the account holder's name was read correctly.
-5. **Decision.**
-   - Checks pass **and** the verifier agrees → the result is accepted, with `extraction_method: "parser"` and `verified_by: "nova-lite"` recorded on the job.
-   - Anything else → the document goes to the AI ladder at **Haiku 5.5** (Nova Lite has already seen it). The parser result is **not** given to the ladder as a hint, so a parser mistake cannot bias the AI. The disagreement is counted against that parser.
+   *Why not "show the model the JSON and ask for differences"* (the first design): on real Bedrock, Nova Lite reported identical values as differences, ignored the issue limit and ran out of tokens on 2-page statements. Reading a dozen facts is a task it does reliably; code makes the comparison. Measured: 16/16 correct statements accepted, and 5/5 kinds of planted error rejected.
+6. **Decision.**
+   - Checks, coverage, reconciliation **and** verification all pass → accepted, with `method: "parser"`, `parser_id` and `verified_by` recorded on the job.
+   - Anything else → the AI ladder at **Haiku 5.5** (Nova Lite has already seen it). The parser result is **not** given to the ladder as a hint.
 
 **Verification mode (tenant setting).**
 
@@ -132,7 +136,7 @@ That makes them ideal for deterministic Python parsing. **Rung 0** sits below th
 
 **Keeping parsers healthy.** Banks change statement formats without notice. A changed layout usually fails the fingerprint or the coverage checks and falls back to the AI ladder, so nothing breaks silently. Each parser also has:
 
-- a metric `parser_disagreement_rate`, with an alarm above 20% (it usually means the bank changed its format);
+- its rejections logged with the failed check names (`rung0_rejected`, `checks_failed` / `issue_paths`); a CloudWatch metric and alarm on the rejection rate per parser are planned (it usually means the bank changed its format);
 - a synthetic fixture test in CI;
 - a version suffix (`hdfc_v1`, `hdfc_v2`), so old and new formats can be supported side by side.
 
@@ -248,7 +252,7 @@ How to read it:
 | Authentication | Lambda authorizer (REQUEST type) | Hashes the key, looks it up, and checks tenant status and scopes. Returns `tenant_id`, `key_id`, `scopes` and the usage-plan key. Cache TTL 60 s, so a revoked key stops working within a minute. |
 | API | Lambda, Python 3.12, FastAPI behind Mangum, 1 GB | The same FastAPI app runs locally under uvicorn (NFR-O2). |
 | Queues | SQS standard ×2 + DLQ, SQS webhooks | A separate interactive queue means a backlog never blocks waiting clients (FR-2.17). |
-| Worker | Lambda container image (ECR), 2 GB, 120 s timeout | pypdfium2, pdfplumber (Rung 0 parsers), Pillow, python-docx, boto3 (Bedrock Converse API). One message per job. |
+| Worker | Lambda (zip package, arm64), 2 GB, 120 s timeout | pypdfium2, pdfplumber (Rung 0 parsers), Pillow, python-docx, boto3 (Bedrock Converse API). One message per job. |
 | Model | Amazon Bedrock (`bedrock-runtime`, Messages API) | §3, §6.4 |
 | Metadata | DynamoDB on-demand, single table, PITR | §7.1 |
 | Files, results | S3, SSE-KMS with Bucket Key, Block Public Access | §7.2 |
@@ -258,7 +262,9 @@ How to read it:
 | Secrets | Secrets Manager | API-key pepper, per-tenant webhook secrets (NFR-S9). |
 | Audit | Audit records in the `api` Lambda log group (KMS, 180-day retention) + CloudTrail trail with log-file validation (`security.yaml`) | NFR-S4, NFR-C4 |
 | Ops | CloudWatch dashboard and alarms, AWS Budgets | NFR-O4, NFR-K3 |
-| IaC | AWS CloudFormation; AWS-only, no state backend to run | NFR-O3 |
+| IaC | AWS CloudFormation; AWS-only, no state backend to run (5 stacks: data, security, app, observability, web) | NFR-O3 |
+| Client test console | React app on a **private** S3 bucket behind CloudFront (HTTPS, Content-Security-Policy); clients sign in with their own API key | `web.yaml` |
+| Browser access (CORS) | Off by default; in prod allowed for **exactly** the console's origin (`CorsAllowOrigin`) | |
 
 #### Where the code runs: everything on AWS Lambda (NFR-O5)
 
@@ -266,13 +272,13 @@ All application code runs as AWS Lambda functions. Nothing runs continuously, so
 
 | Lambda function | Trigger | Does | Memory / timeout | Package |
 |---|---|---|---|---|
-| `authorizer` | API Gateway, every request (cached 60 s) | API key → tenant, status, scopes | 256 MB / 5 s | container image (shared) |
-| `api` | API Gateway | create (direct and presigned), get with wait, list, delete, corrections, document types, chat stubs | 1 GB / 45 s | container image (shared) |
-| `worker` | SQS `jobs-interactive` and `jobs-background` | validate, preprocess, **Rung 0 parsers + Nova Lite verification**, type detection, AI ladder, checks, masking, storage | 2 GB / 120 s | container image (shared) |
-| `intake` | EventBridge: S3 *Object Created*, GuardDuty scan result | `awaiting_upload` → `scanning` → `queued` or `failed` | 128 MB / 10 s | container image (shared) |
-| `webhook` | SQS `webhooks` | sign and deliver webhook events | 128 MB / 15 s | container image (shared) |
-| `retention-cleaner` | DynamoDB stream (TTL deletes) | delete the job's S3 prefix | 128 MB / 30 s | container image (shared) |
-| `scan-sweeper` | EventBridge Scheduler, every 5 min | fail jobs stuck in `scanning` (`scan_timeout`) and expire `awaiting_upload` jobs | 128 MB / 60 s | container image (shared) |
+| `authorizer` | API Gateway, every request (cached 60 s) | API key → tenant, status, scopes | 256 MB / 5 s | zip (shared) |
+| `api` | API Gateway | create (direct and presigned), get with wait, list, delete, corrections, document types, chat stubs | 1 GB / 45 s | zip (shared) |
+| `worker` | SQS `jobs-interactive` and `jobs-background` | validate, preprocess, **Rung 0 parsers + Nova Lite verification**, type detection, AI ladder, checks, masking, storage | 2 GB / 120 s | zip (shared) |
+| `intake` | EventBridge: S3 *Object Created*, GuardDuty scan result | `awaiting_upload` → `scanning` → `queued` or `failed` | 128 MB / 10 s | zip (shared) |
+| `webhook` | SQS `webhooks` | sign and deliver webhook events | 128 MB / 15 s | zip (shared) |
+| `retention-cleaner` | DynamoDB stream (TTL deletes) | delete the job's S3 prefix | 128 MB / 30 s | zip (shared) |
+| `scan-sweeper` | EventBridge Scheduler, every 5 min | fail jobs stuck in `scanning` (`scan_timeout`) and expire `awaiting_upload` jobs | 128 MB / 60 s | zip (shared) |
 
 All functions use arm64 (Graviton) for lower cost and run outside a VPC (§8.5). Each has its own least-privilege IAM role (security.md §6.3). The Rung 0 parsers are plain Python, so they run inside the worker; they need no extra service.
 
@@ -548,13 +554,14 @@ sequenceDiagram
 
 1. **Fingerprint.** The worker checks the text layer for a known bank layout: bank name, IFSC prefix, column headers. A match picks a parser and sets the document type. No match → Stage 8 (type detection) and Stage 9 (AI ladder).
 2. **Parse.** The parser reads the header fields and every transaction row from word positions on the page. No AI is involved.
-3. **Check.** The running balance is checked on every row, then opening + credits − debits = closing, then coverage (no row missed) and formats (IFSC, dates).
-4. **Verify.** Nova Lite gets the pages and the parser's JSON, and lists only the fields it disagrees with. This catches what arithmetic can't, such as a misread account-holder name or account number.
-5. **Decide.** Checks pass and the verifier agrees → go to Stage 11 (normalise and mask). Otherwise the parser result is thrown away and the document goes to Stage 9, starting at Haiku 5.5.
+3. **Check.** The running balance is checked on every row, then opening + credits − debits = closing, then coverage (no row missed) and formats (IFSC).
+4. **Reconcile.** Every row and field must match the PDF's own text, re-read by a second library (no AI).
+5. **Verify.** Nova Lite reads the key facts from the page images without seeing the parser's output; code compares them with the parser result.
+6. **Decide.** All pass → go to Stage 11 (normalise and mask). Otherwise the parser result is thrown away and the document goes to Stage 9, starting at Haiku 5.5.
 
-**Data touched.** The pages and the parser output go to Nova Lite over TLS, under zero data retention. With the tenant setting `checks_only`, step 4 is skipped and the document is never sent to any AI service.
+**Data touched.** The page images go to Nova Lite over TLS, under zero data retention; the parser output is never sent. With the tenant setting `checks_only`, step 5 is skipped and the document is never sent to any AI service.
 
-**Time.** Parse and check ~0.2–0.5 s; verification ~2–4 s (page groups in parallel). This is typically faster than AI extraction of a long statement.
+**Time.** Parse, check and reconcile ~0.2–0.5 s; verification ~2–4 s. Measured end to end on AWS: 5–9 s for 1- and 2-page statements, including the API round trip.
 
 #### Stage 9: Extraction with the model ladder
 
@@ -1156,7 +1163,7 @@ A bug that builds the wrong key gets `AccessDenied` from AWS. Acceptance test 3 
 | NFR-S4 | Every request writes an audit record (tenant, key ID, action, resource ID, time, result) to the `audit` log group. CloudTrail covers AWS API calls. |
 | NFR-S5 | No tools for the model. A prompt rule that document text is data. Output validated against the schema and checked before use. |
 | NFR-S6 | GuardDuty Malware Protection for S3 (§5.4). |
-| NFR-S9 | Secrets Manager, read at cold start through the Parameters and Secrets Lambda extension. |
+| NFR-S9 | Secrets Manager, read with the AWS SDK and cached in memory for 5 minutes (`app/core/secrets.py`). |
 
 ### 8.4 Region control (NFR-C1, revised)
 
@@ -1215,7 +1222,7 @@ Tenants use `default` unless an operator assigns a tenant-specific profile, for 
 
 ### 10.3 Evaluation gate (NFR-A1 to NFR-A3)
 
-`make eval PROFILE=<id>` runs the labelled set through the real pipeline. It runs every rung on every type and reports field-level accuracy per type and rung, how often each rung's output fails validation, the cost per page, and the recommended `start_rung` for each type (the cheapest rung that meets the target). It also evaluates **Rung 0**:
+**Not built yet** (needs the labelled samples). The planned evaluation runner takes the labelled set through the real pipeline. It runs every rung on every type and reports field-level accuracy per type and rung, how often each rung's output fails validation, the cost per page, and the recommended `start_rung` for each type (the cheapest rung that meets the target). It also evaluates **Rung 0**:
 
 - each bank parser's field accuracy and its share of statements accepted;
 - the **verifier's catch rate**, measured on fixtures with one deliberately wrong field, which must be rejected;
@@ -1225,18 +1232,20 @@ A new profile or parser version ships only if it matches or beats the current on
 
 ## 11. Local development (NFR-O1, NFR-O2)
 
-`docker compose up` starts:
+No Docker and no local AWS emulators are needed. What a developer uses:
 
-| Service | Stands in for |
+| Need | How |
 |---|---|
-| `api` (uvicorn, same FastAPI app) | API Gateway + authorizer + API Lambda. Auth runs as FastAPI middleware using the same code. |
-| `worker` (same image, long-polls the queue) | Worker Lambda |
-| `elasticmq` | SQS (same boto3 calls) |
-| `dynamodb-local` | DynamoDB |
-| `minio` | S3 |
-| `ollama` with `qwen3-vl:4b` | Bedrock (`MODEL_PROVIDER=ollama`) |
+| Run every test (unit + end-to-end flows) | `uv run pytest`: the real FastAPI app on **moto** (in-memory DynamoDB, S3, SQS) with the **FakeGateway** answering as the model. ~20 s, no AWS account |
+| Try prompts with a local model | `SLM_MODEL_PROVIDER=ollama` (Ollama on the laptop) |
+| Measure real accuracy / cost | `SLM_MODEL_PROVIDER=bedrock` with a dev AWS profile, calling Bedrock directly from a script |
+| Run the API locally | `uv run uvicorn app.main:app` with `SLM_ENV=local` (auth runs in FastAPI with the same code as the authorizer) |
+| Build the Lambda package | `uv run python scripts/build_lambda.py`: one zip of Linux ARM64 wheels + `app/`, no Docker |
+| Work on the console | `cd web && npm run dev` |
 
-Only configuration differs between local and AWS. A developer with a dev AWS profile can set `MODEL_PROVIDER=bedrock` to measure real accuracy while everything else stays local. CI uses `MODEL_PROVIDER=fake`.
+The **same code** runs locally and in AWS; only `SLM_*` settings differ (NFR-O2). CI-style checks: `uv run pytest`, `uv run ruff check .`, `uvx cfn-lint`, `uvx checkov` (see `infra/cloudformation/README.md` §11).
+
+NFR-O1 originally asked for a one-command local stack (`docker compose up`). It was replaced by the moto-based test suite plus direct Bedrock access, which proved simpler and closer to AWS.
 
 ## 12. Cost estimate (NFR-K1)
 
@@ -1281,27 +1290,27 @@ Request Bedrock quota increases (requests and tokens per minute for each profile
 ## 14. Code layout
 
 ```
-app/
-  main.py                    FastAPI app (local: uvicorn; AWS: Mangum handler)
-  config.py                  pydantic-settings, all from environment
-  auth/                      key hashing, scopes, middleware (local) + authorizer handler (AWS)
-  tenancy/                   tenant settings, tenant-scoped AWS credentials (AssumeRole + tags)
-  storage/                   BlobStore (S3/MinIO), Table (DynamoDB), Queue (SQS/ElasticMQ)
-  gateway/                   ModelGateway + bedrock / ollama / fake adapters, profiles
-  modules/
-    extraction/
-      api.py service.py worker.py
-      preprocess/            detect, pdf, image, docx
-      parsers/               Rung 0: fingerprint.py, verify.py, bank/<bank>_v1.py (§3.3)
-      schemas/               one module per document type (FR-3.11)
-      checks.py masking.py normalise.py prompts.py
-      profiles/              model profiles (YAML)
-    chat/api.py              501 stubs (FR-8)
-  audit.py  usage.py  webhooks.py
-infra/cloudformation/        stacks: data, security, app, observability; params/dev.json, params/prod.json
-eval/                        labelled-set manifest + runner
-tests/                       unit, contract (OpenAPI), e2e (local and AWS), tenant isolation
-docker-compose.yml
+app/                          the platform (runs in AWS Lambda; same code locally)
+  main.py                     FastAPI app: error handlers, per-request audit, CORS, Mangum handler
+  lambda_handlers.py          the 7 Lambda entry points (one zip, one Handler each)
+  config.py                   all settings from SLM_* environment variables
+  auth/                       authorizer.py (Lambda authorizer), principal.py (API key -> tenant), dependencies.py
+  core/                       ids, errors, SafeLogger (field allowlist), clock, secrets
+  storage/                    aws.py (platform + per-tenant sessions), jobs.py (JobRepo), blobs.py (S3),
+                              tenants.py (settings, API keys), queues.py, keys.py, ddb.py
+  gateway/                    base.py, bedrock.py (Converse, per-model request rules), ollama.py, fake.py
+  modules/extraction/         api.py (routes), service.py (create/get/list/delete), worker.py, pipeline.py,
+                              classify.py, checks.py, masking.py, normalise.py, prompts.py, window.py,
+                              preprocess/ (detect, pdf, image, docx), schemas/ (one per type),
+                              parsers/ (fingerprint, base, coverage, reconcile, verify, bank/*), profiles/
+  modules/chat/api.py         reserved chat routes (501)
+  intake.py, webhooks.py, retention.py, usage.py, audit.py
+web/                          React + TypeScript test console (Vite), hosted by the web stack
+infra/cloudformation/         data, security, app, observability, web templates; params/; README.md
+scripts/                      build_lambda, deploy, deploy_web, create_tenant, manage_keys, smoke_test, _aws
+tests/                        unit/, integration/ (end-to-end flows on moto), helpers/ (synthetic PDFs/images)
+docs/                         requirements, architecture, security, cost, bedrock guide, implementation guide,
+                              implementation flow, execution flow, integration guide
 ```
 
 ## 15. Delivery phases

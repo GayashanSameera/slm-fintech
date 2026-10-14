@@ -443,3 +443,11 @@ def test_expired_job_is_invisible_before_ttl_deletes_it(client, tenant, fake_gat
     again = client.post("/v1/extractions?wait=0", headers=_auth(api_key),
                         json={"document_type": "invoice", "file": {"content_base64": png64}})
     assert again.status_code == 202 and again.json()["id"] != job_id
+
+
+def test_cors_preflight_is_not_audited(client, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="audit")
+    client.options("/v1/extractions", headers={"Origin": "https://example.com", "Access-Control-Request-Method": "POST"})
+    assert [r for r in caplog.records if r.name == "audit"] == []    # no key, no action: nothing to audit

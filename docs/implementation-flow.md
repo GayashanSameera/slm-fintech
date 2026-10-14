@@ -5,7 +5,7 @@
 | Audience | Developers joining the project (intern level). No prior knowledge of the code assumed. |
 | Describes | The code **as it is** in `app/`, stage by stage: which module and function runs, on which AWS resource, what it reads and writes, and what happens when something goes wrong. |
 | Verified by | [tests/integration/test_flow_e2e.py](../tests/integration/test_flow_e2e.py) runs every stage below end to end (real FastAPI app, in-memory AWS, fake AI model). Plus 105 unit tests. **120 tests pass.** |
-| Related | Design: [architecture.md](architecture.md) §4–6 · Infrastructure: [infra/cloudformation/README.md](../infra/cloudformation/README.md) · Security: [security.md](security.md) |
+| Related | Function-by-function call order: [execution-flow.md](execution-flow.md) · Design: [architecture.md](architecture.md) §4–6 · Infrastructure: [infra/cloudformation/README.md](../infra/cloudformation/README.md) · Security: [security.md](security.md) · Developer handbook: [implementation-guide.md](implementation-guide.md) |
 | Date | 2026-10-14 |
 
 ---
@@ -104,7 +104,7 @@ There is **one endpoint**, `POST /v1/extractions`, and the request body decides 
 
 Optional fields:
 - `document_type`: `invoice`, `bank_statement`, `payslip`, `identity_document`, `kyc_form`, or `auto` / absent to detect it ([service.py `validate_doc_type`](../app/modules/extraction/service.py#L48));
-- `wait`: 0–40 seconds, a query parameter or JSON field.
+- `wait`: 0–25 seconds today (`SLM_MAX_WAIT_SECONDS`; 40 once the API Gateway timeout quota is raised), a query parameter or JSON field.
 
 ---
 
@@ -113,7 +113,7 @@ Optional fields:
 No application code runs here; this is all infrastructure (`app.yaml`).
 
 - **AWS WAF** (prod) blocks an IP above 1,000 requests per 5 minutes, known exploit patterns, and IPs with a bad reputation.
-- **API Gateway** (REST API) has one catch-all route, `ANY /v1/{proxy+}`. It throttles the whole API, refuses requests without an `Authorization` header (401) and forwards everything else, through the authorizer, to the api Lambda. Uploads with `multipart/form-data` pass through as binary.
+- **API Gateway** (REST API) has one catch-all route, `ANY /v1/{proxy+}`, plus an unauthenticated `OPTIONS` route for browser pre-flight checks that the api function answers (CORS for exactly the console's origin). It throttles the whole API, refuses requests without an `Authorization` header (401) and forwards everything else, through the authorizer, to the api Lambda. Uploads with `multipart/form-data` pass through as binary.
 
 ---
 
@@ -182,7 +182,7 @@ Every change is conditional ([JobRepo.transition](../app/storage/jobs.py#L95)), 
 - `awaiting_upload` → `expired`;
 - `scanning` → `failed` / `scan_timeout`, plus a webhook.
 
-**4.** The client calls `GET /v1/extractions/<id>?wait=40` for the result (stage 13).
+**4.** The client calls `GET /v1/extractions/<id>?wait=20` for the result (stage 13).
 
 ---
 
@@ -241,6 +241,7 @@ Entry: [pipeline.py `extract_document`](../app/modules/extraction/pipeline.py#L1
 | 4. Schema | `BankStatement.model_validate` ([schemas/bank_statement.py](../app/modules/extraction/schemas/bank_statement.py)) | a date or amount can't be read (`schema_invalid`) |
 | 5. Arithmetic | [checks.py `check_bank_statement`](../app/modules/extraction/checks.py#L65) | running balance wrong on any row; opening + credits − debits ≠ closing; bad IFSC |
 | 6. Coverage | [coverage.py `coverage_problems`](../app/modules/extraction/parsers/coverage.py#L27) | parsed rows ≠ date-led lines on the pages; last balance ≠ closing; header field missing |
+| 6b. Text reconciliation | [reconcile.py `reconcile`](../app/modules/extraction/parsers/reconcile.py) | any row's date, amounts, reference or description, or any header field, doesn't match the PDF text re-read by pypdfium2 (a different library from the parser's pdfplumber), in order, with no row missing or extra. No AI |
 | 7. AI check | [verify.py `verify`](../app/modules/extraction/parsers/verify.py) with **Nova Lite** (~150 output tokens, temperature 0) | **Read independently, compare in code.** Nova reads the key facts itself (holder, account number, IFSC, branch, period, first and last transaction) without seeing the parser's output; [`compare`](../app/modules/extraction/parsers/verify.py) checks them against the parser (case, spaces and date formats normalised). Any mismatch, a required field it couldn't read, or an unreadable answer rejects. The verifier can only **reject**, never change a value. Amounts are not re-read: arithmetic already proved them. |
 
 - **Skipped verification:** with tenant setting `verification_mode = checks_only`, step 7 is skipped. The statement then never reaches any AI service.
@@ -281,6 +282,7 @@ Haiku 5.5  →  Haiku 5.5 + thinking  →  Sonnet 5.5
 | Gate 1: JSON | [`parse_and_validate`](../app/modules/extraction/pipeline.py#L95) + `strip_code_fences` | the answer is one JSON object and wasn't cut off (`max_tokens`) |
 | Gate 2: schema | `model.model_validate` (Pydantic, [schemas/](../app/modules/extraction/schemas/)) | every field has the right shape; dates and amounts normalise; unknown fields are **dropped** |
 | Gate 3: checks | [checks.py `run_checks`](../app/modules/extraction/checks.py#L147) | sums add up within 0.01; PAN, GSTIN and IFSC formats are valid |
+| Gate 3b: text reconciliation | [pipeline.py `text_reconciliation_failures`](../app/modules/extraction/pipeline.py) | digital bank statements only: every AI-extracted row must match the PDF text exactly (same check as Rung 0 step 6b). A mismatch counts as a failed check: the ladder climbs, and at the top it becomes the warning `text_reconciliation_failed` |
 
 - **A gate fails:** the problems go into the next attempt's instruction. Field names and error types are included, plus check messages with numbers (model only), but **never** the document values from validation errors.
 - **A pass:** the ladder stops.
@@ -312,7 +314,7 @@ Back in [`process_job`](../app/modules/extraction/worker.py#L92):
 
 | Step | Code | Detail |
 |---|---|---|
-| Store the result | [JobRepo.complete](../app/storage/jobs.py#L157) | `processing` → `succeeded`. The result sits **inline** in the item if ≤ 100 KB, otherwise in S3 `.../result.json` with `result_key`. Also stores how it was produced: `method`, `model_id`, `parser_id`, `verified_by`, `profile_id`, `prompt_version`, `warnings`, `page_count`, and **`usage`**: the job's token counts in total and per model ([usage.py `summarize`](../app/usage.py)), returned to the tenant with the result. |
+| Store the result | [JobRepo.complete](../app/storage/jobs.py#L157) | `processing` → `succeeded`. The result sits **inline** in the item if ≤ 100 KB, otherwise in S3 `.../result.json` with `result_key`. Also stores how it was produced: `method`, `model_id`, `parser_id`, `verified_by`, `profile_id`, `prompt_version`, `warnings`, `page_count`, and **`usage`**: the job's token counts and `estimated_cost_usd` (AI cost at list prices), in total and per model ([usage.py `summarize`](../app/usage.py)), returned to the tenant with the result. |
 | Training copy | [`_keep_for_training`](../app/modules/extraction/worker.py#L80) → [Blobs.copy](../app/storage/blobs.py#L88) | Only with the tenant's written consent; never identity or KYC documents; never when the page shows Aadhaar markers; for detected types only at ≥ 0.95 confidence. |
 | Delete the source | [Blobs.delete](../app/storage/blobs.py#L72) | Always, once processed (or after a permanent failure). |
 | Dedup entry | [JobRepo.save_dedup](../app/storage/jobs.py#L203) | So the same file is answered instantly next time. |
@@ -334,6 +336,7 @@ Back in [`process_job`](../app/modules/extraction/worker.py#L92):
 
 **Polling** (`GET /v1/extractions/<id>?wait=0..40`):
 - [service.py `get_job`](../app/modules/extraction/service.py#L216) checks the id format first ([ids.py `is_job_id`](../app/core/ids.py)), waits with `wait_for_job`, and returns `public_job`.
+- Results come back with their fields in the document type's schema order ([service.py `_schema_order`](../app/modules/extraction/service.py)); DynamoDB itself doesn't keep key order.
 - **Another tenant's id returns 404**, exactly like an id that doesn't exist, so nobody can tell whether it exists. The query runs under the caller's tenant key, and the IAM tenant role would refuse it anyway.
 - `Retry-After: 2` is sent while the job is not final.
 - Results stored in S3 are read back transparently.
@@ -359,7 +362,7 @@ Back in [`process_job`](../app/modules/extraction/worker.py#L92):
 
 | Concern | Code | How it works |
 |---|---|---|
-| **Settings** | [config.py](../app/config.py) | Every value from an `SLM_*` environment variable (set by `app.yaml` in AWS, `.env.local` locally). `settings.is_local` turns off IAM role switching, KMS and the GuardDuty wait. |
+| **Settings** | [config.py](../app/config.py) | Every value from an `SLM_*` environment variable (set by `app.yaml` in AWS; in tests by `tests/conftest.py`). `settings.is_local` turns off IAM role switching, KMS and the GuardDuty wait. |
 | **Tenant isolation** | [storage/aws.py `tenant_session`](../app/storage/aws.py#L49) | All tenant data access (`JobRepo`, `Blobs`, `get_tenant_settings`, `usage.record`) goes through a session of the `tenant-data` role tagged `tenant_id=<t>`. IAM allows only `TENANT#<t>` keys and `tenants/<t>/` objects. Sessions last 1 hour and are renewed while more than 16 minutes remain, so presigned URLs stay valid. `Blobs._check` also refuses keys outside the prefix in code. |
 | **Ids** | [core/ids.py](../app/core/ids.py) | `ext_<ULID>` jobs (time-sortable, so listing is newest first), `t_<ulid>` tenants, `key_...` keys. Ids are validated before they are used in a database key. |
 | **Error shape** | [main.py](../app/main.py#L28) | Every error is `{"error": {"code", "message"}}`. Validation errors list the field and error type only, never the submitted value (NFR-S8). Unexpected errors log the exception **type** only. |

@@ -80,8 +80,9 @@ async def audit_every_request(request: Request, call_next):
     audited inside service.py; this record is the per-request trail around them.
     """
     response = await call_next(request)
-    if request.url.path == "/healthz":
-        return response                       # health checks are not tenant actions
+    if request.url.path == "/healthz" or request.method == "OPTIONS":
+        # Health checks and browser CORS pre-flights carry no key and do nothing: not tenant actions.
+        return response
     principal = getattr(request.state, "principal", None)
     path_params = request.scope.get("path_params") or {}
     status = response.status_code

@@ -303,6 +303,21 @@ All application code runs on AWS Lambda (architecture §4.2). This removes a who
 - **Smaller attack surface:** no inbound network access to any function; only API Gateway and AWS event sources can invoke them.
 - **Signed code:** Lambda code signing ensures only images built and signed by our CI pipeline can run (§10).
 
+### 7.7 Browser access and the test console (FR-7.4)
+
+Tenants normally call the API from their servers. The **test console** (`web/`, stack `web.yaml`) is the one browser client, so it has its own controls:
+
+- **HTTPS only:** CloudFront in front of a **private** S3 bucket, readable only by that distribution (Origin Access Control). There is no public bucket and no plain-HTTP website endpoint, because the page handles API keys.
+- **No key in the site:** each user types their own key. It is kept in `sessionStorage` (that tab only, gone when it closes), sent only to the API, and never logged. `config.json` holds only the API URL.
+- **Response headers on every file:**
+  - a Content-Security-Policy: scripts only from the site itself, no inline scripts, network calls only to API Gateway and S3;
+  - HSTS;
+  - framing denied (`frame-ancestors 'none'`, `X-Frame-Options: DENY`);
+  - no MIME sniffing;
+  - no referrer.
+- **CORS:** off by default. In prod it is allowed for **exactly** the console's origin (`CorsAllowOrigin`), on the API (FastAPI middleware, which also answers pre-flights) and on the documents bucket (upload links). Other websites get no CORS permission, so a browser on them can't use the API. CORS never replaces authentication: every call still needs a valid key. API Gateway's own error responses carry `Access-Control-Allow-Origin: *`, which is safe because their bodies are fixed text with no data.
+- **Pre-flight requests** (`OPTIONS`) skip the authorizer by necessity (browsers send them without the key). They reach the api function, which returns headers only, and they are not audited.
+
 ## 8. Retention and deletion (NFR-C5, FR-2.9, FR-6)
 
 | Mechanism | Removes | When |
@@ -344,13 +359,12 @@ All application code runs on AWS Lambda (architecture §4.2). This removes a who
 
 ## 10. Secure development and supply chain
 
-- **Dependencies:** pinned with hashes (`uv lock`). Weekly Dependabot updates. `pip-audit` runs in CI. A licence check blocks AGPL and GPL packages.
-- **Code scanning:** `bandit` and `semgrep` (with rules for logging tenant content and building keys without `tenant_id`) in CI. Findings above Low severity block the merge.
-- **Container images:**
-  - built in CI from a pinned AWS Lambda base image;
-  - scanned with Amazon Inspector ECR scanning;
-  - images with a Critical vulnerability are not deployed;
-  - images are immutable tags signed with AWS Signer, and Lambda code-signing is enforced.
+- **Dependencies:** exact versions locked in `uv.lock`. The Lambda package is built from that lock file only (`scripts/build_lambda.py`), and PyMuPDF (AGPL) is deliberately not used. The console's npm versions are pinned in `web/package.json`. *Planned with CI:* weekly Dependabot updates, `pip-audit`, and a licence check blocking AGPL/GPL.
+- **Code checks today:** `ruff`, 150+ tests including tenant isolation and audit; `cfn-lint` and `checkov` on every template (every skipped rule has its reason written next to it). *Planned with CI:* `bandit` and `semgrep`, with rules for logging tenant content and building keys without `tenant_id`.
+- **Lambda package:**
+  - one zip (`lambda-<content-hash>.zip`), built reproducibly from the lock file, so the same inputs always give the same file;
+  - stored in the private code bucket; old packages expire after 90 days;
+  - *planned:* Amazon Inspector Lambda code scanning, and Lambda code signing with AWS Signer.
 - **Infrastructure as code:** CloudFormation templates are checked with `cfn-lint` and scanned with `checkov`; every deploy goes through a change set that is reviewed before it is executed. Changes to IAM, KMS, bucket policy or the SCP need a second reviewer.
 - **Secrets in the repository:** pre-commit `gitleaks` hook and GitHub secret scanning.
 - **Test data:** synthetic documents only outside prod. Copying prod data to other environments is denied by SCP and by the bucket policy.
@@ -413,7 +427,7 @@ Most controls are free: IAM, SCPs, encryption context, KMS key policies, lifecyc
 |---|---|
 | Extra AWS Config rules (~8) | ~USD 3 a month |
 | GuardDuty account-level threat detection (CloudTrail and DNS analysis at low volume) | ~USD 4 a month |
-| Amazon Inspector ECR scanning (a few images a month) | ~USD 1 a month |
+| Amazon Inspector Lambda scanning (7 functions) | ~USD 1 a month |
 | CloudTrail data events for the documents bucket and KMS | ~USD 1 a month |
 | Log-archive bucket with Object Lock | < USD 1 a month |
 | **Total extra** | **~USD 10 a month**, on top of the ~USD 56 base case in [cost.md](cost.md) v0.3 (CloudTrail management events and the security-change alerts are already deployed by the templates at ~USD 0.05) |

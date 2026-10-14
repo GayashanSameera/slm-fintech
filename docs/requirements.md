@@ -79,7 +79,7 @@ Priority: **M** = must have for release 1, **S** = should have, **C** = could ha
 | FR-2.11 | If the same tenant uploads an identical file for the same document type, the earlier result is reused without processing it again. | S |
 | FR-2.12 | A tenant can submit field corrections for a finished job. | M |
 | FR-2.13 | A tenant can list supported document types and their JSON schemas. | M |
-| FR-2.14 | **Wait for result (direct flow).** A direct-flow request waits up to 40 seconds for the job to finish. If it finishes in time, the response is `200 OK` with the full result. Otherwise it is `202 Accepted` (FR-2.6). The `wait` parameter (0–40 seconds, default 40) lets a client shorten or skip the wait. | M |
+| FR-2.14 | **Wait for result (direct flow).** A direct-flow request waits up to 40 seconds for the job to finish (**currently 25 s**: API Gateway's default 29-second limit applies until the quota increase is approved; then `MaxWaitSeconds=40`). If it finishes in time, the response is `200 OK` with the full result. Otherwise it is `202 Accepted` (FR-2.6). The `wait` parameter (0–40 seconds, default 40) lets a client shorten or skip the wait. | M |
 | FR-2.15 | If a processing window is configured and closed, direct-flow requests return `202` immediately, without waiting. | M |
 | FR-2.16 | `GET /v1/extractions/{id}` accepts a `wait` parameter (0–40 seconds, default 0) and returns the job when it is final or the wait ends. This is how presigned-flow clients fetch results. | M |
 | FR-2.17 | Jobs whose client is waiting are processed before jobs nobody is waiting for, so a backlog does not hold up waiting requests. | S |
@@ -143,6 +143,8 @@ General rules for all types:
 |---|---|---|
 | FR-7.1 | Pages processed, model tokens and estimated cost are counted per tenant per day. | M |
 | FR-7.2 | Usage can be exported for billing. | S |
+| FR-7.3 | Every job response reports its AI usage: model calls, input/output/cached tokens, and the estimated AI cost in USD at list prices, in total and per model (`usage`). *(Added 2026-10-14.)* | M |
+| FR-7.4 | A browser **test console** lets a tenant upload documents with their own API key and see results, verification, tokens and AI cost. It is served over HTTPS only, and the API accepts browser calls only from its origin. *(Added 2026-10-14.)* | S |
 
 ### FR-8 Chat (reserved)
 
@@ -157,12 +159,13 @@ General rules for all types:
 |---|---|---|
 | FR-9.1 | Digital PDF bank statements whose layout matches a supported bank are extracted by a deterministic parser, without AI extraction. | M |
 | FR-9.2 | A parser result is accepted only if all consistency checks (FR-3.2) and coverage checks pass: every row parsed, last balance equals closing balance, valid formats. | M |
-| FR-9.3 | By default, every accepted parser result is also **verified by an AI model** against the document pages. Any disagreement rejects the parser result. | M |
+| FR-9.3 | By default, every accepted parser result is also **verified by an AI model** against the document pages. Any disagreement rejects the parser result. *(Implemented as an independent reading: the model reads the key facts from the page images without seeing the parser output, and code compares them.)* | M |
 | FR-9.4 | A tenant can choose `checks_only` verification. Rung 0 documents are then never sent to any AI service, and results are accepted on the deterministic checks alone. | S |
 | FR-9.5 | A rejected parser result, or a parser error, never fails the job: the document is extracted by AI instead. The parser result is not passed to the AI. | M |
 | FR-9.6 | Adding a bank, or a new version of a bank's layout, requires only a new parser module and its test fixtures. | M |
-| FR-9.7 | Parser health is monitored per bank: share of statements accepted, check failures and verifier disagreements, with an alert above 20% disagreement. | M |
+| FR-9.7 | Parser health is monitored per bank: share of statements accepted, check failures and verifier disagreements, with an alert above 20% disagreement. *(Status: rejections are logged with their reasons; the metric and alarm are not built yet.)* | M |
 | FR-9.8 | Parsers for at least the 5 most common banks in the pilot samples are available at go-live. | S |
+| FR-9.9 | **Every row and every field** of a digital bank statement (date, description, reference, amounts) and its header fields must match the PDF's own text, in order, with no row missing or extra, before a result passes, whether a parser or an AI produced it. Statement rows are reconciled with real transactions downstream, so nothing may pass wrongly. A parser result that fails is rejected; an AI result that fails climbs the ladder and, if it still fails, carries the warning `text_reconciliation_failed`. *(Added 2026-10-14.)* | M |
 
 ## 5. Non-functional requirements
 
@@ -233,7 +236,7 @@ Legal counsel must confirm NFR-C1 to NFR-C5 before the pilot, including whether 
 
 | ID | Requirement |
 |---|---|
-| NFR-O1 | The whole system runs locally with one command (`docker compose up`) and no AWS account. |
+| NFR-O1 | The whole system can be developed and tested locally without an AWS account. *(Implemented as the moto-based test suite, `uv run pytest`: the real app on in-memory DynamoDB, S3 and SQS with a fake model. The originally planned `docker compose` stack was not needed; see architecture §11.)* |
 | NFR-O2 | The same code runs locally and in AWS; only configuration differs. |
 | NFR-O3 | All AWS infrastructure is defined as code (AWS CloudFormation). |
 | NFR-O4 | Dashboards show queue depth, job failures, dead-letter count, Rung 0 parser health, escalation rate, Lambda errors and cost. |
