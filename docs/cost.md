@@ -110,7 +110,7 @@ Every resource in `infra/cloudformation/` priced with its real settings. Workloa
 
 | Resource (template) | What drives the cost | Monthly |
 |---|---|---|
-| AWS WAF (`app.yaml`) | Fixed: 1 web ACL USD 5 + 3 rules USD 3; requests negligible. **Off in dev** (`EnableWaf=false`) | 8.01 |
+| AWS WAF (`app.yaml`) | Fixed: 1 web ACL USD 5 + 3 rules USD 3; requests negligible. **Currently off in prod too** (`EnableWaf=false` since 2026-10-14, owner's decision): this line is then 0 and the total ~USD 12 | 8.01 |
 | KMS (`data.yaml`) | Fixed: 3 customer-managed keys USD 3. Requests stay tiny thanks to S3 Bucket Key, SQS data-key reuse (1 h) and secret caching | 3.15 |
 | GuardDuty Malware Protection (`app.yaml`) | Every object under `tenants/` (~5,800 objects, ~6 GB) | 1.74 |
 | Secrets Manager (`security.yaml`, `create_tenant.py`) | API-key pepper + 1 webhook secret (LYNEAR) at USD 0.40 each; +0.40 per extra tenant with a webhook | 0.86 |

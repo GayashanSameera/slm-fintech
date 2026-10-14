@@ -242,7 +242,7 @@ If a bank's layout defeats the generic logic (for example, amounts with `Cr`/`Dr
 2. Add one line to `REGISTRY` in `schemas/__init__.py`. Mark it `sensitive_identity=True` if it holds identity data (strict Aadhaar masking, never kept for training).
 3. Add its consistency checks to `checks.py` (`_CHECKS`), and any identifier fields to `masking.py` `FIELD_KINDS`.
 4. Add `start_rung` for it to `profiles/default.yaml`.
-5. The prompt is generated from the schema (`prompts.system_prompt`), and `GET /v1/document-types` lists it automatically. Add it to `DOCUMENT_TYPES` in `web/src/types.ts` and to the integration guide (§7).
+5. **Automatic:** the extraction prompt is generated from the schema (`prompts.system_prompt`), the type-detection prompt offers every `REGISTRY` type (`prompts.CLASSIFY_SYSTEM`), and `GET /v1/document-types` lists it with its JSON Schema. Add it to `DOCUMENT_TYPES` in `web/src/types.ts` and to the integration guide (§7).
 
 ### 8.3 Change models, prices or the ladder
 
@@ -313,7 +313,7 @@ Things the tests can't prove (moto doesn't evaluate IAM, and the fake model can'
 | AI ladder on Bedrock (Nova Lite, Haiku 5.5, Sonnet 5.5) | ✅ request formats confirmed on Bedrock |
 | Token usage + estimated AI cost per job | ✅ in the API and the console |
 | Per-request audit, exact retention, key rotation/revocation | ✅ |
-| Infrastructure: 5 stacks in `lyndev` prod, WAF, KMS, GuardDuty, alarms, budget | ✅ |
+| Infrastructure: 5 stacks in `lyndev` prod, KMS, GuardDuty, alarms, budget | ✅ (WAF switched **off** on 2026-10-14 to save cost: `EnableWaf` in `params/prod.json`) |
 | React console on S3 + CloudFront (HTTPS, CSP) | ✅ |
 | Alert email for alarms | ⛔ not set (`AlertEmail` in `params/prod.json`) |
 | Bedrock data-retention mode `none` | ⛔ not set (account-wide decision) |

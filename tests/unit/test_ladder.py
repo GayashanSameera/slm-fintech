@@ -173,3 +173,11 @@ def test_usage_summary_counts_every_call_per_model():
     assert s["estimated_cost_usd"] == 0.001077
     assert summarize([]) == {"model_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
                              "estimated_cost_usd": 0.0, "by_model": []}   # checks_only Rung 0: no model at all
+
+
+def test_classifier_prompt_offers_every_registered_type():
+    # A new document type added to the REGISTRY must be detectable without editing the prompt.
+    from app.modules.extraction.prompts import CLASSIFY_SYSTEM
+    from app.modules.extraction.schemas import REGISTRY
+
+    assert all(f'"{name}"' in CLASSIFY_SYSTEM for name in REGISTRY) and '"other"' in CLASSIFY_SYSTEM

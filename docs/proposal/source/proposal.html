@@ -125,15 +125,15 @@
     <div class="sub">Turning invoices, bank statements, payslips, identity documents and KYC forms into structured data, with your customers' data protected at every step and a predictable, low running cost.</div>
     <div class="pillars">
       <div class="pillar"><b>Security first</b><span>Zero data retention by the AI service, customer isolation enforced by AWS, encryption everywhere</span></div>
-      <div class="pillar"><b>Low, usage-based cost</b><span>About USD 80 a month at 1,000 pages a day. Nothing runs, or costs, while idle</span></div>
-      <div class="pillar"><b>Fast results</b><span>Typically 10–20 seconds per document, over a simple API</span></div>
+      <div class="pillar"><b>Low, usage-based cost</b><span>About USD 50 a month at 1,000 pages a day, with AI cost shown on every result. Nothing runs, or costs, while idle</span></div>
+      <div class="pillar"><b>Fast, verified results</b><span>Measured 5–10 seconds per document; every row of a digital bank statement checked against the original</span></div>
     </div>
   </div>
   <div class="meta">
     <div>Prepared for</div><div><b>[Client Name]</b></div>
     <div>Prepared by</div><div>[Your Company]</div>
-    <div>Date</div><div>13 October 2026</div>
-    <div>Version</div><div>1.0</div>
+    <div>Date</div><div>14 October 2026</div>
+    <div>Version</div><div>1.1 (platform built and running)</div>
     <div>Classification</div><div>Confidential</div>
   </div>
 </div>
@@ -141,45 +141,45 @@
 <!-- ============ 1. EXECUTIVE SUMMARY ============ -->
 <div class="section">
   <h2>1. Executive summary</h2>
-  <p class="lead">We propose a secure, fully managed platform that extracts structured data from financial documents through a simple API. It runs in our dedicated AWS account and uses Amazon Bedrock for the AI step. It is designed around the two things that matter most to you: <b>protecting your customers' data</b> and <b>keeping running costs low and predictable</b>.</p>
+  <p class="lead">We propose a secure, fully managed platform that extracts structured data from financial documents through a simple API. <b>The platform is built and running</b> on AWS, using Amazon Bedrock for the AI step, and can be tested today through a secure web console with your own API key. It is designed around the two things that matter most to you: <b>protecting your customers' data</b> and <b>keeping running costs low and predictable</b>.</p>
 
   <div class="tiles">
-    <div class="tile"><div class="v">0</div><div class="l">documents retained by the AI service. Zero data retention is locked on</div></div>
+    <div class="tile"><div class="v">0</div><div class="l">documents or results kept by the AI service, or found in our logs (verified)</div></div>
     <div class="tile"><div class="v">3</div><div class="l">independent layers keeping each customer's data separate</div></div>
-    <div class="tile"><div class="v num">~$80</div><div class="l">estimated monthly AWS cost at 1,000 pages per business day</div></div>
-    <div class="tile"><div class="v num">~$0.004</div><div class="l">estimated all-in cost per page</div></div>
+    <div class="tile"><div class="v num">~$50</div><div class="l">estimated monthly AWS cost at 1,000 pages per business day</div></div>
+    <div class="tile"><div class="v num">~$0.002</div><div class="l">estimated all-in cost per page</div></div>
   </div>
 
   <h3>Data security</h3>
   <ul class="checks">
     <li><b>Your documents are never used to train AI models,</b> and the AI model provider never receives them. Amazon Bedrock runs the models in AWS-owned accounts that the provider cannot access.</li>
-    <li><b>Nothing is kept by the AI service.</b> We lock Bedrock's data-retention setting to "none" so it cannot be changed, and any model that would keep data is blocked.</li>
+    <li><b>Nothing is kept by the AI service.</b> Bedrock stores no prompts or outputs for the models we use, and its prompt-logging feature is switched off and watched by an alert. Before go-live we also lock the account's data-retention setting to "none", so any model that would keep data is blocked.</li>
     <li><b>Customers are kept apart by AWS itself,</b> not only by our code. A software bug cannot expose one customer's data to another.</li>
     <li><b>Everything is encrypted,</b> in transit (TLS 1.2+) and at rest (AWS KMS customer-managed keys).</li>
     <li><b>Sensitive identifiers are masked automatically.</b> Aadhaar numbers are always masked, and PAN, account, UAN, ID and phone numbers are masked by default.</li>
-    <li><b>Bank statements read by code inside our own environment.</b> Digital statements from known banks are extracted by deterministic code, then checked by AI. Customers who prefer it can choose a mode where these documents are never sent to any AI service.</li>
+    <li><b>Bank statements read by code inside our own environment.</b> Digital statements from known banks are extracted by deterministic code, every row is reconciled against the document's own text, and an AI model independently confirms the key facts. Customers who prefer it can choose a mode where these documents are never sent to any AI service.</li>
     <li><b>Original files are deleted right after processing,</b> unless you opt in to keeping them. Retention is under your control: 7, 30, 90 or 365 days, or delete any time through the API.</li>
   </ul>
 
   <h3>Cost</h3>
   <ul class="checks">
-    <li><b>About USD 80 per month</b> at 1,000 pages per business day, all AWS costs included, security controls included.</li>
+    <li><b>About USD 50 per month</b> at 1,000 pages per business day, all AWS costs of the running platform included.</li>
     <li><b>You pay only for pages processed.</b> No servers or GPUs run while idle, so a quiet day costs close to nothing.</li>
     <li><b>Code first, AI where needed:</b> most digital bank statements are read by deterministic code at almost no cost, with every result verified by AI. Other documents use the lowest-cost AI model that does the job well, and only difficult documents move to a stronger model.</li>
-    <li><b>Built-in cost controls:</b> budget alerts at 80% and 100%, and cost tracked per customer per day.</li>
+    <li><b>Transparent cost:</b> every result reports the AI tokens it used and its estimated AI cost. Budget alerts at 80% and 100%, and cost tracked per customer per day.</li>
   </ul>
 </div>
 
 <!-- ============ 2. SCOPE ============ -->
 <div class="section">
-  <h2>2. What we will deliver</h2>
+  <h2>2. What the platform does</h2>
   <p>A multi-tenant extraction API that accepts a document and returns clean, validated JSON. Each of your customers (tenants) gets its own API keys and settings, and its data is fully isolated.</p>
 
   <h3>Supported documents</h3>
   <table>
     <tr><th style="width:24%">Document type</th><th>Key fields extracted</th><th style="width:30%">Automatic checks</th></tr>
     <tr><td><b>Invoice</b></td><td>Number, dates, seller and buyer (name, GSTIN, PAN, address), line items with HSN/SAC, CGST/SGST/IGST, totals</td><td>Line items add up to the subtotal; subtotal + tax = total</td></tr>
-    <tr><td><b>Bank statement</b></td><td>Bank, account holder, account number, IFSC, period, balances, every transaction</td><td>Opening + credits − debits = closing; running balance on every row</td></tr>
+    <tr><td><b>Bank statement</b></td><td>Bank, account holder, account number, IFSC, period, balances, every transaction</td><td>Opening + credits − debits = closing; running balance on every row; for digital PDFs, every row and field reconciled with the document's text</td></tr>
     <tr><td><b>Payslip</b></td><td>Employer, employee, PAN, UAN, pay period, earnings, deductions, gross, net</td><td>Earnings add up to gross; gross − deductions = net</td></tr>
     <tr><td><b>Identity document</b></td><td>ID type (Aadhaar, PAN, passport, driving licence, voter ID), number, name, DOB, address, validity</td><td>PAN format; expiry</td></tr>
     <tr><td><b>KYC form</b></td><td>Personal details, PAN, Aadhaar (masked), CKYC number, contact, addresses, occupation, income, PEP status, nominee</td><td>PAN format; required fields present</td></tr>
@@ -188,7 +188,7 @@
 
   <h3>Two simple ways to integrate</h3>
   <div class="grid2">
-    <div class="card"><span class="badge">DIRECT · up to 4 MB</span><h4>Send the file, get the result</h4><p>One API call with the file inside. The response contains the extracted JSON, typically within 10–20 seconds. Ideal for small documents.</p></div>
+    <div class="card"><span class="badge">DIRECT · up to 4 MB</span><h4>Send the file, get the result</h4><p>One API call with the file inside. The response contains the extracted JSON, measured at 5–10 seconds for typical documents. Ideal for small documents.</p></div>
     <div class="card"><span class="badge">UPLOAD LINK · up to 25 MB</span><h4>Get a secure upload link, then fetch the result</h4><p>Request a one-time upload link, upload the file directly to encrypted storage, then fetch the result. Ideal for larger files and high volumes.</p></div>
   </div>
 
@@ -196,9 +196,11 @@
   <ul>
     <li>Signed webhooks that notify your systems when a result is ready. They carry no document data.</li>
     <li>Field corrections endpoint, to feed back fixes and improve accuracy over time (with consent).</li>
-    <li>Per-customer usage reporting for billing.</li>
-    <li>Bank-statement parsers for the most common banks in your samples, with AI verification and automatic health monitoring per bank.</li>
-    <li>A fully serverless deployment on AWS Lambda, defined as code (AWS CloudFormation), with dashboards and alerts, plus a full local development environment.</li>
+    <li><b>AI usage and cost on every result:</b> model calls, tokens and the estimated AI cost, per document and per model, plus per-customer daily usage for billing.</li>
+    <li><b>A secure web console</b> where your team signs in with its own API key to upload documents and see results, checks, tokens and cost. Served over HTTPS only.</li>
+    <li><b>API key management:</b> keys shown once and stored only as a hash; rotation and revocation (effective within a minute); keys can be delivered straight into AWS Secrets Manager.</li>
+    <li>Bank-statement parsers for the most common banks in your samples, with row-by-row reconciliation and AI verification.</li>
+    <li>A fully serverless deployment on AWS Lambda, defined as code (AWS CloudFormation), with dashboards, alarms and budget alerts, and an integration guide with ready-to-use Python and Node.js client code.</li>
   </ul>
 </div>
 
@@ -213,7 +215,7 @@
     <li><b>Secure upload.</b> Your system sends the document over HTTPS with its API key. The key identifies the customer, and nothing in the request can change that.</li>
     <li><b>Malware scan.</b> Every file is scanned by Amazon GuardDuty before our software opens it. Infected files are deleted at once.</li>
     <li><b>Preparation.</b> Pages are converted to optimised images and text, and checked for size, page count, encryption and macros.</li>
-    <li><b>Extraction.</b> Digital bank statements from known banks are read by <b>deterministic code</b>: every row and balance is parsed exactly and proven by arithmetic, and an AI model then double-checks the result. All other documents are sent to an AI model on Amazon Bedrock with strict instructions: extract only what is printed, never guess. Bedrock processes the request and keeps nothing.</li>
+    <li><b>Extraction.</b> Digital bank statements from known banks are read by <b>deterministic code</b>: every row and balance is parsed exactly, proven by arithmetic and <b>reconciled field by field with the document's own text</b>, and an AI model then independently confirms the key facts. All other documents are sent to an AI model on Amazon Bedrock with strict instructions: extract only what is printed, never guess. Bedrock processes the request and keeps nothing.</li>
     <li><b>Validation, checks and masking.</b> The result is checked against the document schema, totals and balances are recalculated, and sensitive identifiers are masked <i>before anything is stored</i>.</li>
     <li><b>Result returned, original deleted.</b> You receive clean JSON. The original file is deleted immediately unless you have opted in to keeping it.</li>
   </ol>
@@ -223,7 +225,7 @@
     <img src="ladder.png" alt="Model ladder: Nova Lite first, then Claude Haiku 5.5, then Claude Sonnet 5.5 only if checks fail">
     <figcaption>Figure 2. Bank statements from known banks are read by code and verified by AI. Other documents start on the lowest-cost model proven accurate for their type, and move up only if the automatic checks fail.</figcaption>
   </figure>
-  <p>Bank statements make up most of the volume, and digital statements follow fixed layouts per bank. Reading them with code is exact, fast and nearly free, and the running balance on every row proves the numbers. The AI verification step then double-checks names, account details, dates and descriptions. If the code and the AI disagree, the statement is simply re-extracted by AI. Other documents use the lowest-cost AI model first, and only those that fail the automatic checks go to a stronger model.</p>
+  <p>Bank statements make up most of the volume, and digital statements follow fixed layouts per bank. Reading them with code is exact, fast and nearly free: the running balance on every row proves the numbers, and every row's date, description, reference and amounts are matched against the document's own text. An AI model then reads the account holder, account details, period and first and last transactions itself, without seeing the code's result, and the two readings are compared. If anything differs, the statement is simply re-extracted by AI, and AI results on digital statements must pass the same row-by-row reconciliation. Because these rows are reconciled with real transactions downstream, nothing passes without being checked. Other documents use the lowest-cost AI model first, and only those that fail the automatic checks go to a stronger model.</p>
 </div>
 
 <!-- ============ 4. DATA SECURITY ============ -->
@@ -234,7 +236,7 @@
     <div class="card"><h4>Confidentiality</h4><p>Only the customer who sent a document, and the software processing it, can read it. Not other customers, not the AI provider, and not our staff in day-to-day work.</p></div>
     <div class="card"><h4>Isolation</h4><p>Customer data is separated by AWS access controls, so a bug in our code alone cannot leak data between customers.</p></div>
     <div class="card"><h4>Minimisation</h4><p>Keep as little as possible, for as short a time as possible. Originals are deleted after processing, and identifiers are masked before storage.</p></div>
-    <div class="card"><h4>Traceability</h4><p>Every access is recorded in a tamper-proof audit trail that is kept for 180 days.</p></div>
+    <div class="card"><h4>Traceability</h4><p>Every API request is recorded in an audit trail kept for 180 days, and all AWS activity is recorded by AWS CloudTrail.</p></div>
     <div class="card"><h4>Erasability</h4><p>All data of one document, or one customer, can be found and deleted on request. Backup copies age out within 35 days.</p></div>
     <div class="card"><h4>Defence in depth</h4><p>Several independent controls protect each risk, so no single failure exposes data.</p></div>
   </div>
@@ -252,10 +254,11 @@
     <li><b>Less AI involvement by design.</b> Most bank statements are extracted by code inside our AWS account; the AI only verifies the result. A customer can choose a <b>no-AI mode</b> for these documents, in which they never leave our environment.</li>
   </ul>
   <ul class="checks">
-    <li><b>Zero retention, locked.</b> Bedrock's account setting is fixed to "none" and protected by an organisation-wide policy that nobody in our team can override. Any model that would keep data, for example for abuse review, is blocked automatically instead of being used.</li>
+    <li><b>Zero retention.</b> The approved models keep no prompts or outputs. <i>Before go-live:</i> Bedrock's account setting is fixed to "none", so any model that would keep data (for example for abuse review) is blocked instead of used; in a dedicated production account this is also protected by an organisation-wide policy.</li>
     <li><b>Approved models only.</b> Access is limited to the specific models in this proposal. Changing models requires a reviewed infrastructure change.</li>
     <li><b>One geography.</b> AI processing is restricted to AWS regions in the United States (N. Virginia, Ohio, Oregon), and all stored data is in one region. The platform can be deployed in another region, such as the EU, on request.</li>
-    <li><b>No prompt logging.</b> Bedrock's optional prompt-logging feature is switched off and monitored. An alarm fires if anyone turns it on.</li>
+    <li><b>No prompt logging.</b> Bedrock's optional prompt-logging feature is switched off (verified), and an alert fires the moment anyone turns it on.</li>
+    <li><b>Only what is needed reaches the model.</b> The model sees the document pages while it reads them; it never receives other customers' data, our database or the code's own result (for verification it reads independently). The extracted results stay in our AWS account.</li>
     <li><b>The model cannot act.</b> It has no tools, no internet access and no access to other data. A malicious instruction hidden inside a document cannot reach anything, and every output is validated before use.</li>
   </ul>
 </div>
@@ -268,7 +271,7 @@
     <div class="card layer"><span class="badge">LAYER 2</span><h4>AWS access control</h4><p>Our software works with temporary AWS credentials that are locked to one customer's data. If code asks for another customer's data, <b>AWS refuses</b> the request.</p></div>
     <div class="card layer"><span class="badge">LAYER 3</span><h4>Encryption keys</h4><p>Each customer's files are encrypted with that customer recorded as the "encryption context". Decryption for any other customer is refused, and every attempt is logged.</p></div>
   </div>
-  <div class="callout"><b>Proven by testing.</b> An automated isolation test suite runs against a real AWS environment on every release. It tries to read, list, change and delete another customer's data, and it must fail every time.</div>
+  <div class="callout"><b>Proven by testing.</b> Automated tests try to read, list, change and delete another customer's data through the real application, and must fail every time; they run on every code change. <i>Before go-live</i> the same suite also runs against AWS itself, to prove layer 2 independently of our code.</div>
 
   <h3>4.3 Encryption everywhere</h3>
   <table>
@@ -287,7 +290,7 @@
     <li><b>PAN, bank account, UAN, ID and phone numbers</b> are masked to the last four characters by default. Each customer can be allowed specific fields unmasked, by type, if their use case needs it.</li>
     <li><b>Masking happens before storage,</b> so no later step (storage, logs, notifications or training) ever sees unmasked values.</li>
     <li><b>Original files are deleted</b> immediately after processing, unless the customer has given recorded consent to keep them for accuracy improvement. Identity and KYC files are never kept for that purpose by default.</li>
-    <li><b>No document content in logs, metrics or error messages.</b> Logs contain IDs, counts and timings only. An automated test fails the build if any test value ever appears in a log.</li>
+    <li><b>No document content in logs, metrics or error messages.</b> Logs contain IDs, counts and timings only, enforced in code by an allowlist of loggable fields. <b>Verified:</b> all production logs were searched for the values of the documents processed in testing (names, account numbers, PANs, amounts, invoice numbers, API keys) and none appeared.</li>
     <li><b>Original file names are never stored,</b> and webhooks carry only a job ID and status.</li>
   </ul>
 </div>
@@ -308,17 +311,16 @@
 
   <h3>4.7 Access by our team</h3>
   <ul class="checks">
-    <li><b>No standing access to your data.</b> Day-to-day operations roles can see metrics, queues and job status, but cannot read documents or results.</li>
-    <li><b>Emergency access is controlled:</b> it needs a second approver, expires after one hour, alerts the security channel, and is reviewed after every use.</li>
-    <li><b>Strong identity:</b> single sign-on with multi-factor authentication, no shared accounts and no long-lived keys. Deployments run through an automated pipeline.</li>
-    <li><b>Separate environments:</b> production data lives in its own AWS account. Development and test use synthetic documents only, and copying production data out is blocked.</li>
+    <li><b>Least privilege for the software:</b> each of the seven functions has its own narrow permissions, and only the per-customer role can touch customer data.</li>
+    <li><b>Development and test use synthetic documents only.</b> No real customer document is used in testing or stored in our code repository.</li>
+    <li><i>Before go-live:</i> a dedicated production AWS account; operations roles that see metrics and job status but cannot read documents or results; emergency access with a second approver, a one-hour limit and an alert; single sign-on with multi-factor authentication; deployments through an automated pipeline.</li>
   </ul>
 
   <h3>4.8 Audit and monitoring</h3>
   <ul class="checks">
     <li><b>Complete audit trail:</b> every API action is recorded (customer, key, action, resource, time, result) and kept for <b>180 days</b>.</li>
-    <li><b>Tamper-proof:</b> AWS activity logs are stored in a separate log account under S3 Object Lock, so nobody, including administrators, can alter or delete them during retention.</li>
-    <li><b>Real-time alerts</b> for any change to data-retention or logging settings, storage access policies or encryption keys, for emergency access, and for unusual API activity (Amazon GuardDuty threat detection).</li>
+    <li><b>AWS activity log:</b> all AWS API activity is recorded by AWS CloudTrail with log-file integrity validation. <i>Before go-live:</i> copies kept in a separate log account under S3 Object Lock, so nobody can alter or delete them.</li>
+    <li><b>Real-time alerts</b> today for prompt-logging being switched on, encryption keys being disabled or scheduled for deletion, failed jobs, backlogs, server errors and budget thresholds. <i>Before go-live:</i> account-wide threat detection (Amazon GuardDuty) and alerts on storage access-policy changes.</li>
   </ul>
 
   <h3>4.9 Retention and deletion: you stay in control</h3>
@@ -336,8 +338,8 @@
   <h3>4.10 Assurance and compliance support</h3>
   <ul class="checks">
     <li><b>Built on audited infrastructure.</b> AWS publishes independent audit reports (such as SOC 2 and ISO 27001) for its services, available through AWS Artifact.</li>
-    <li><b>Independent penetration test</b> of the API, authorisation and file handling before the pilot. High-severity findings are fixed before go-live.</li>
-    <li><b>Secure development:</b> automated code and dependency scanning, signed and scanned container images, and two-person review for any security-relevant infrastructure change.</li>
+    <li><b>Independent penetration test</b> of the API, authorisation and file handling before go-live. High-severity findings are fixed before go-live.</li>
+    <li><b>Secure development:</b> more than 150 automated tests (including customer isolation, audit records and data-handling rules) and automated security scanning of all infrastructure templates on every change; exact dependency versions locked. <i>Before go-live:</i> automated dependency and code scanning in the delivery pipeline, and two-person review for security-relevant changes.</li>
     <li><b>Designed to support your obligations:</b>
       <ul>
         <li>consent recorded with a timestamp (DPDP Act 2023);</li>
@@ -364,16 +366,16 @@
 <!-- ============ 5. COST ============ -->
 <div class="section">
   <h2>5. Running cost</h2>
-  <p class="lead">The platform is fully serverless and pay-per-use. You pay for the pages processed and a small fixed base for security and monitoring, never for idle servers.</p>
+  <p class="lead">The platform is fully serverless and pay-per-use. You pay for the pages processed and a small fixed base, never for idle servers. Every result reports its own AI cost, so the bill can be traced document by document.</p>
 
   <div class="hero">
     <div class="big">
-      <div class="v num">~USD 80</div>
-      <div class="l">estimated AWS cost per month at <b>1,000 pages per business day</b> (about 22,000 pages a month), with all security controls included</div>
+      <div class="v num">~USD 50</div>
+      <div class="l">estimated AWS cost per month at <b>1,000 pages per business day</b> (about 22,000 pages a month), for the platform as it runs today</div>
     </div>
     <div class="side">
-      <div class="tile"><div class="v num">~USD 0.004</div><div class="l">per page, all-in</div></div>
-      <div class="tile"><div class="v num">~USD 0.02–0.03</div><div class="l">per 10-page bank statement</div></div>
+      <div class="tile"><div class="v num">~USD 0.002</div><div class="l">per page, all-in</div></div>
+      <div class="tile"><div class="v num">~USD 0.006–0.013</div><div class="l">per 10-page bank statement (code path / AI path)</div></div>
     </div>
   </div>
 
@@ -381,20 +383,21 @@
   <table class="num">
     <tr><th>Item</th><th>What it covers</th><th class="r" style="width:22%">USD per month</th></tr>
     <tr><td><b>AI processing</b></td><td>Amazon Bedrock models, charged per token: AI verification of code-extracted statements, AI extraction of other documents, and retries on stronger models for difficult ones</td><td class="r">36</td></tr>
-    <tr><td><b>Platform infrastructure</b></td><td>API, compute, queues, database, storage, firewall, encryption keys, secrets, malware scanning, monitoring</td><td class="r">34</td></tr>
-    <tr><td><b>Security monitoring</b></td><td>Threat detection, configuration compliance rules, container image scanning, tamper-proof audit logging</td><td class="r">10</td></tr>
-    <tr class="total"><td>Total</td><td></td><td class="r">~80</td></tr>
+    <tr><td><b>Platform infrastructure</b></td><td>API, compute, queues, database, storage, encryption keys, secrets, malware scanning, monitoring and alarms, activity log, web console</td><td class="r">12</td></tr>
+    <tr class="total"><td>Total</td><td></td><td class="r">~50</td></tr>
+    <tr><td><i>Optional</i></td><td>Web application firewall in front of the API (can be switched on with one setting)</td><td class="r">+8</td></tr>
+    <tr><td><i>Optional, recommended for go-live</i></td><td>Account-wide threat detection, configuration rules, code scanning, tamper-proof log archive</td><td class="r">+10</td></tr>
   </table>
 
   <h3>As your volume grows</h3>
   <table class="num">
     <tr><th>Volume</th><th class="r">Pages per month</th><th class="r" style="width:22%">USD per month</th></tr>
-    <tr><td>1,000 pages per business day (base case)</td><td class="r">22,000</td><td class="r">~80</td></tr>
-    <tr><td>1,000 pages every day</td><td class="r">30,000</td><td class="r">~94</td></tr>
-    <tr><td>Base volume with harder documents (more scanned statements, more retries)</td><td class="r">22,000</td><td class="r">~145</td></tr>
-    <tr><td>5,000 pages per business day</td><td class="r">110,000</td><td class="r">~232</td></tr>
+    <tr><td>1,000 pages per business day (base case)</td><td class="r">22,000</td><td class="r">~50</td></tr>
+    <tr><td>1,000 pages every day</td><td class="r">30,000</td><td class="r">~62</td></tr>
+    <tr><td>Base volume with harder documents (more scanned statements, more retries)</td><td class="r">22,000</td><td class="r">~115</td></tr>
+    <tr><td>5,000 pages per business day</td><td class="r">110,000</td><td class="r">~200</td></tr>
   </table>
-  <p class="small muted">About USD 40 a month is a fixed base for security and monitoring. Everything else scales with the pages actually processed, so cost per page falls as volume grows.</p>
+  <p class="small muted">About USD 5 a month is a fixed base (encryption keys, secrets, alarms). Everything else scales with the pages actually processed. Optional items above are added on top when chosen.</p>
 
   <h3>Why the cost stays low</h3>
   <div class="grid2">
@@ -407,11 +410,11 @@
   <h3>Cost controls</h3>
   <ul class="checks">
     <li>AWS budget alerts at 80% and 100% of the agreed monthly budget.</li>
-    <li>Cost estimated per customer per day, visible on the operations dashboard the same day.</li>
-    <li>Automatic alert if daily cost rises well above its normal level.</li>
+    <li>AI cost estimated on every result, and per customer per day, the same day.</li>
+    <li>Alarms on failed jobs, growing backlogs and server errors, so retries can't silently drive cost up.</li>
   </ul>
 
-  <div class="note"><b>Basis of estimate.</b> AWS list prices for US East (N. Virginia) as of October 2026, excluding taxes. Assumes about 70% of pages are bank statements (mostly digital) and the rest are other document types, about half of them scanned. Model prices and token counts are confirmed with your sample documents in the first week, and the estimate is updated before the pilot. <b>Not included:</b> a development/test environment (about USD 15–20 a month), optional AWS Support plans, taxes, and implementation services (quoted separately).</div>
+  <div class="note"><b>Basis of estimate.</b> AWS list prices for US East (N. Virginia) as of October 2026, excluding taxes. Assumes about 70% of pages are bank statements (mostly digital) and the rest are other document types, about half of them scanned. Token counts were measured on the running platform with synthetic documents (for example about USD 0.0002 of AI cost for a code-read bank statement and USD 0.0005 for an invoice image) and are re-measured on your samples before go-live. <b>Not included:</b> optional items listed above, a separate development/test environment (about USD 6 a month), optional AWS Support plans, taxes, and implementation services (quoted separately).</div>
 </div>
 
 <!-- ============ 6. QUALITY ============ -->
@@ -420,22 +423,21 @@
   <ul class="checks">
     <li><b>No guessing:</b> fields not present in the document are returned as empty (null), never invented.</li>
     <li><b>Consistent formats:</b> dates as <code>YYYY-MM-DD</code>, and amounts as exact decimal strings (for example <code>"11800.00"</code>) to avoid rounding errors.</li>
-    <li><b>Automatic arithmetic checks</b> on every invoice, bank statement and payslip. Any mismatch is reported as a warning on the result, so your team knows exactly what to review.</li>
+    <li><b>Automatic arithmetic checks</b> on every invoice, bank statement and payslip, and <b>row-by-row reconciliation</b> of digital bank statements with the document's own text. Any mismatch is reported as a warning on the result, so your team knows exactly what to review; a result with no warnings has passed every check.</li>
     <li><b>Measured accuracy:</b> field-level accuracy is measured per document type on a labelled test set before release. Starting targets: 95% for invoices and payslips, 90% for bank-statement transactions, 95% for ID numbers and names (to be agreed with you).</li>
     <li><b>Release gate:</b> a new model or prompt is released only if it matches or beats the current one on every document type.</li>
     <li><b>Continuous improvement:</b> corrections you send back, with consent, are used to improve the test set and the instructions given to the model.</li>
   </ul>
 
-  <h2 style="margin-top:9mm">7. Delivery plan</h2>
+  <h2 style="margin-top:9mm">7. Status and plan to go-live</h2>
   <table>
-    <tr><th style="width:24%">Phase</th><th>Scope</th><th style="width:30%">Outcome</th></tr>
-    <tr><td><b>0. Validation sprint</b><br><span class="small muted">1 week</span></td><td>Run your sample documents through the models; measure accuracy, speed and token usage; confirm prices and settings</td><td>Confirmed cost estimate and first accuracy figures</td></tr>
-    <tr><td><b>1. Core extraction</b></td><td>Extraction pipeline, document schemas, checks, masking, local environment, and the first bank-statement parser with AI verification</td><td>End-to-end extraction working locally</td></tr>
-    <tr><td><b>2. Secure platform</b></td><td>AWS infrastructure as code, API, customer isolation, upload links, webhooks, usage reporting</td><td>Working platform on AWS; isolation tests passing</td></tr>
-    <tr><td><b>3. Accuracy tuning</b></td><td>Labelled test set, evaluation gate, model choice per document type, and parsers for the 5–8 most common banks</td><td>Agreed accuracy targets met</td></tr>
-    <tr><td><b>4. Hardening and go-live</b></td><td>Malware scanning, firewall, dashboards, alerts, budgets, penetration test, runbooks</td><td>Security review passed; ready for pilot</td></tr>
+    <tr><th style="width:24%">Phase</th><th>Scope</th><th style="width:30%">Status</th></tr>
+    <tr><td><b>1. Core extraction</b></td><td>Extraction pipeline, document schemas, checks, masking, row-by-row reconciliation, the bank-statement parser framework with AI verification</td><td><b>Done</b></td></tr>
+    <tr><td><b>2. Secure platform</b></td><td>AWS infrastructure as code, API, customer isolation, upload links, malware scanning, webhooks, usage and AI-cost reporting, key rotation, web console, dashboards, alarms, budgets</td><td><b>Done, running on AWS</b></td></tr>
+    <tr><td><b>3. Accuracy tuning</b></td><td>Your samples: parsers for the 5–8 most common banks, labelled test set, model choice per document type</td><td>Starts when samples arrive</td></tr>
+    <tr><td><b>4. Go-live hardening</b></td><td>Dedicated production account, zero-retention lock, extended wait time, delivery pipeline, per-customer rate limits, threat detection and log archive, penetration test, runbooks</td><td>Planned</td></tr>
   </table>
-  <p class="small muted">The detailed timeline is agreed after Phase 0, once your sample documents have been measured.</p>
+  <p class="small muted">The go-live timeline is agreed once your sample documents have been measured.</p>
 </div>
 
 <!-- ============ 8. NEXT STEPS ============ -->
@@ -453,6 +455,7 @@
   <ul>
     <li>30–50 anonymised sample documents per document type, for testing and accuracy measurement, including statements from the banks your customers use most.</li>
     <li>An indication of which banks' statements are most common, so parsers are built for the right banks first.</li>
+    <li>Optionally, try the platform now: we provide a console link and a test API key.</li>
     <li>Confirmation of the accuracy targets and the expected response times.</li>
     <li>Your compliance team's review of the data-handling approach in Section 4.</li>
     <li>A decision on processing hours: around the clock (recommended) or business hours only.</li>
@@ -461,16 +464,17 @@
   <h3>Next steps</h3>
   <ol class="steps">
     <li>Review this proposal and share any questions, particularly on security and cost.</li>
-    <li>Provide sample documents and agree the Phase 0 validation sprint.</li>
-    <li>We present the measured accuracy, speed and confirmed monthly cost.</li>
-    <li>Agree the delivery timeline and start Phase 1.</li>
+    <li>Try the running platform through the web console, or integrate with the API using the integration guide.</li>
+    <li>Provide sample documents; we build parsers for your most common banks and measure accuracy, speed and cost on them.</li>
+    <li>Agree the go-live hardening scope and timeline.</li>
   </ol>
 
   <h3>Glossary</h3>
   <table>
     <tr><th style="width:28%">Term</th><th>Meaning</th></tr>
     <tr><td>AWS Lambda</td><td>AWS service that runs code on demand in short-lived, isolated functions; nothing runs or is billed while idle</td></tr>
-    <tr><td>Rule-based parser</td><td>Deterministic code that reads a known bank-statement layout exactly, without AI; its result is checked by arithmetic and verified by an AI model</td></tr>
+    <tr><td>Rule-based parser</td><td>Deterministic code that reads a known bank-statement layout exactly, without AI; its result is checked by arithmetic, reconciled with the document's text and verified by an AI model</td></tr>
+    <tr><td>Reconciliation</td><td>Checking every extracted row (date, description, reference, amounts) against the text printed in the document, in order, with nothing missing or extra</td></tr>
     <tr><td>Amazon Bedrock</td><td>AWS's managed service for running AI models through an API, with no servers to manage</td></tr>
     <tr><td>Zero data retention</td><td>The AI service does not store the documents it processes or the results it produces</td></tr>
     <tr><td>Tenant</td><td>One of your customers, with its own keys, settings and fully isolated data</td></tr>

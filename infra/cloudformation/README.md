@@ -403,7 +403,7 @@ If a stack update **fails**, CloudFormation rolls back to the previous working s
 | app | `ApiIntegrationTimeoutMs` | `29000` | API Gateway wait for the api function. 45000 after the quota increase |
 | app | `MaxWaitSeconds` | `25` | Longest `?wait=`; keep a few seconds below the timeout. 40 after the quota increase |
 | app | `ApiThrottleRate` / `ApiThrottleBurst` | `50` / `100` | Requests per second for the whole API |
-| app | `EnableWaf` | `true` | WAF on/off (dev params: `false`) |
+| app | `EnableWaf` | `true` | WAF on/off. **Prod: `false` since 2026-10-14** (owner's decision, saves ~USD 8/month); dev: `false`. Set `true` and redeploy `app` to restore it |
 | app | `WafRateLimitPerIp` | `1000` | Requests per IP per 5 minutes before WAF blocks |
 | app | `InteractiveMaxConcurrency` / `BackgroundMaxConcurrency` | `10` / `3` | Max parallel workers per queue (minimum 2) |
 | app | `LogLevel` | `INFO` | App log level |
