@@ -2,7 +2,8 @@
   "_comment": "Parameter values for PROD, one block per stack. Read by scripts/deploy.py. Never put secrets here. After the API Gateway timeout quota increase is approved: ApiIntegrationTimeoutMs 45000, MaxWaitSeconds 40.",
   "data": {
     "Env": "prod",
-    "EnforceTenantEncryptionContext": "false"
+    "EnforceTenantEncryptionContext": "false",
+    "CorsAllowOrigin": "https://dcw2i73df06ry.cloudfront.net"
   },
   "security": {
     "Env": "prod",
@@ -17,11 +18,15 @@
     "BackgroundMaxConcurrency": "3",
     "ProcessingWindow": "always",
     "LogLevel": "INFO",
-    "EnableWaf": "true"
+    "EnableWaf": "true",
+    "CorsAllowOrigin": "https://dcw2i73df06ry.cloudfront.net"
   },
   "observability": {
     "Env": "prod",
     "AlertEmail": "",
     "MonthlyBudgetUsd": "150"
+  },
+  "web": {
+    "Env": "prod"
   }
 }

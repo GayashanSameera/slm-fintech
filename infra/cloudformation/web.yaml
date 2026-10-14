@@ -1,0 +1,168 @@
+# ==============================================================================
+# Stack 5: WEB  (independent of the others; deploy any time)
+#
+# Hosts the React test console (web/) for clients:
+#
+#   browser --HTTPS--> CloudFront --(Origin Access Control)--> PRIVATE S3 bucket
+#
+# Why CloudFront and not an S3 "website" URL: clients type their API key into this
+# page, so it must arrive over HTTPS and unaltered. S3 website endpoints are HTTP only.
+# The bucket stays private: only this distribution can read it (no public access).
+#
+# Security headers on every response (CloudFront response headers policy):
+#   * Content-Security-Policy: the page may only load its own files and only talk to
+#     API Gateway (the API) and S3 (upload links). Injected scripts can't phone home.
+#   * HSTS, no framing (clickjacking), no MIME sniffing, strict referrer.
+#
+# After the first deployment, set CorsAllowOrigin=https://<WebDomain> in
+# params/<env>.json (data and app blocks) and redeploy those two stacks, so the
+# browser may call the API and upload to S3 from this page. scripts/deploy_web.py
+# uploads the built app.
+# ==============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SLM Fintech - web console hosting (private S3 + CloudFront, HTTPS)
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+
+Resources:
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "Static build files only (no customer data); CloudFront serves every request."
+          - id: CKV_AWS_21
+            comment: "Each deployment uploads the full build; versioning adds nothing for static files."
+    Properties:
+      BucketName: !Sub slm-${Env}-web-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:          # never public: CloudFront reads it through OAC
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      Tags:
+        - { Key: app, Value: slm }
+
+  # Origin Access Control: CloudFront signs its requests to S3; the bucket policy
+  # below accepts only those, from THIS distribution.
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub slm-${Env}-web
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontReadsOnly
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt WebBucket.Arn, !Sub "${WebBucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: "false" } }
+
+  WebSecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub slm-${Env}-web-security
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: !Sub >-
+              default-src 'self';
+              script-src 'self';
+              style-src 'self' 'unsafe-inline';
+              img-src 'self' data: blob:;
+              connect-src 'self' https://*.execute-api.${AWS::Region}.amazonaws.com https://*.s3.amazonaws.com https://*.s3.${AWS::Region}.amazonaws.com;
+              frame-ancestors 'none';
+              base-uri 'none';
+              form-action 'none';
+              object-src 'none'
+          StrictTransportSecurity: { Override: true, AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true }
+          FrameOptions: { Override: true, FrameOption: DENY }
+          ContentTypeOptions: { Override: true }
+          ReferrerPolicy: { Override: true, ReferrerPolicy: no-referrer }
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_68
+            comment: "Static test console; the API it calls is protected by its own WAF. A CloudFront WAF would add ~USD 8/month."
+          - id: CKV_AWS_86
+            comment: "Access logs for static files add cost and no security value; API calls are logged by the API."
+          - id: CKV_AWS_174
+            comment: "The default *.cloudfront.net certificate is used (TLS 1.2+ negotiated by modern browsers); set MinimumProtocolVersion when a custom domain is added."
+          - id: CKV_AWS_310
+            comment: "Single S3 origin; failover adds nothing for a static console."
+          - id: CKV_AWS_374
+            comment: "No geo restriction: clients may use the console from any country."
+          - id: CKV2_AWS_32
+            comment: "A response headers policy IS attached (WebSecurityHeaders); this rule misses it."
+          - id: CKV2_AWS_47
+            comment: "No WAF on the static console (see CKV_AWS_68)."
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub slm-${Env} web console
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100           # North America + Europe edges: cheapest
+        Origins:
+          - Id: web-bucket
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: web-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed "CachingOptimized"; index.html and config.json are uploaded with
+          # Cache-Control: no-cache, so a new release shows up at once.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref WebSecurityHeaders
+        # A single-page app: unknown paths serve index.html.
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+      Tags:
+        - { Key: app, Value: slm }
+
+Outputs:
+  WebUrl:
+    Description: Share this URL with clients
+    Value: !Sub "https://${WebDistribution.DomainName}"
+  WebOrigin:
+    Description: Value for CorsAllowOrigin in params/<env>.json (data and app blocks)
+    Value: !Sub "https://${WebDistribution.DomainName}"
+  WebBucketName:
+    Value: !Ref WebBucket
+  DistributionId:
+    Value: !Ref WebDistribution

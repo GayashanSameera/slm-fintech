@@ -23,5 +23,8 @@
     "Env": "dev",
     "AlertEmail": "CHANGE-ME@example.com",
     "MonthlyBudgetUsd": "50"
+  },
+  "web": {
+    "Env": "dev"
   }
 }

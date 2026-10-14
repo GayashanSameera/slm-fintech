@@ -162,8 +162,12 @@ def test_usage_summary_counts_every_call_per_model():
              GatewayResult("", HAIKU, 2100, 500, cache_read_tokens=3000)]
     s = summarize(calls)
     assert (s["model_calls"], s["input_tokens"], s["output_tokens"], s["cache_read_tokens"]) == (3, 5100, 920, 6000)
+    # Cost at list prices (usage.PRICES): Nova 1000*0.06 + 20*0.24; Haiku 4100*0.11 + 900*0.55 + 6000*0.011 (per 1M).
     assert s["by_model"] == [
-        {"model_id": NOVA, "calls": 1, "input_tokens": 1000, "output_tokens": 20, "cache_read_tokens": 0},
-        {"model_id": HAIKU, "calls": 2, "input_tokens": 4100, "output_tokens": 900, "cache_read_tokens": 6000}]
-    assert summarize([]) == {"model_calls": 0, "input_tokens": 0, "output_tokens": 0,
-                             "cache_read_tokens": 0, "by_model": []}     # checks_only Rung 0: no model at all
+        {"model_id": NOVA, "calls": 1, "input_tokens": 1000, "output_tokens": 20, "cache_read_tokens": 0,
+         "estimated_cost_usd": 0.000065},
+        {"model_id": HAIKU, "calls": 2, "input_tokens": 4100, "output_tokens": 900, "cache_read_tokens": 6000,
+         "estimated_cost_usd": 0.001012}]
+    assert s["estimated_cost_usd"] == 0.001077
+    assert summarize([]) == {"model_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+                             "estimated_cost_usd": 0.0, "by_model": []}   # checks_only Rung 0: no model at all

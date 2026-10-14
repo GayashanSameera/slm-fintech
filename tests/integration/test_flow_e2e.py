@@ -118,9 +118,11 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
     assert body["result"]["seller"]["pan"] == "XXXXXX234F"            # stage 11: masked
     assert body["page_count"] == 1 and body["model_id"].startswith("us.anthropic.claude-haiku")
     # Token usage of the job (FakeGateway reports 100 in / 50 out per call): one Haiku call.
+    # Haiku list price: 100 * 0.11 + 50 * 0.55 per 1M tokens = USD 0.0000385.
     assert body["usage"] == {"model_calls": 1, "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0,
+                             "estimated_cost_usd": 3.9e-05,
                              "by_model": [{"model_id": body["model_id"], "calls": 1, "input_tokens": 100,
-                                           "output_tokens": 50, "cache_read_tokens": 0}]}
+                                           "output_tokens": 50, "cache_read_tokens": 0, "estimated_cost_usd": 3.9e-05}]}
 
     # Stage 12: the source file is deleted after processing (no training consent).
     assert not Blobs(tenant_id).exists(keys.source_key(tenant_id, job["id"]))

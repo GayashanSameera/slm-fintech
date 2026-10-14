@@ -40,7 +40,12 @@ def summarize(calls: list[GatewayResult]) -> dict:
     priced differently. Only counts: no prompts, answers or document content.
 
         {"model_calls": 2, "input_tokens": 5466, "output_tokens": 160, "cache_read_tokens": 0,
-         "by_model": [{"model_id": "us.amazon.nova-lite-v1:0", "calls": 1, ...}, ...]}
+         "estimated_cost_usd": 0.000412,
+         "by_model": [{"model_id": "us.amazon.nova-lite-v1:0", "calls": 1, ..., "estimated_cost_usd": 0.00019}, ...]}
+
+    `estimated_cost_usd` is the AI (Bedrock) cost of the job at the list prices in PRICES:
+    an ESTIMATE for showing per-document cost; the AWS bill is the truth. It covers model
+    tokens only, not the platform's fixed costs (docs/cost.md).
 
     A Rung 0 statement with tenant setting `checks_only` makes no model call at all:
     every count is 0 and `by_model` is empty.
@@ -53,11 +58,15 @@ def summarize(calls: list[GatewayResult]) -> dict:
         m["input_tokens"] += c.input_tokens
         m["output_tokens"] += c.output_tokens
         m["cache_read_tokens"] += c.cache_read_tokens
+        m["estimated_cost_usd"] = m.get("estimated_cost_usd", 0.0) + estimate_cost(c)
+    for m in per_model.values():
+        m["estimated_cost_usd"] = round(m["estimated_cost_usd"], 6)
     return {
         "model_calls": len(calls),
         "input_tokens": sum(c.input_tokens for c in calls),
         "output_tokens": sum(c.output_tokens for c in calls),
         "cache_read_tokens": sum(c.cache_read_tokens for c in calls),
+        "estimated_cost_usd": round(sum(estimate_cost(c) for c in calls), 6),
         "by_model": list(per_model.values()),       # in the order the models were first called
     }
 

@@ -9,6 +9,7 @@ Stacks, in dependency order (each imports values exported by the ones before it)
     security       tenant-data role, API-key pepper, GuardDuty role, CloudTrail
     app            Lambda functions, queues, API Gateway, WAF, events, GuardDuty plan
     observability  alarms, budget, dashboard, security-change alerts
+    web            HTTPS hosting of the React console (private S3 + CloudFront); independent
 
 For each stack this:
   1. lints the template with cfn-lint (if available),
@@ -37,7 +38,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from _aws import REGION, session  # noqa: E402
 
 TEMPLATES = ROOT / "infra" / "cloudformation"
-ORDER = ("data", "security", "app", "observability")
+ORDER = ("data", "security", "app", "observability", "web")
 INLINE_LIMIT = 51_200        # CloudFormation's limit for a template sent inline
 
 
