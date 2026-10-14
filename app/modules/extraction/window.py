@@ -25,6 +25,7 @@ _WINDOW_RE = re.compile(r"^(\w{3})-(\w{3}) (\d{2}):(\d{2})-(\d{2}):(\d{2}) ([\w/
 
 
 def _parse(spec: str):
+    """"Mon-Fri 09:00-19:00 Asia/Kolkata" -> (first day, last day, start, end, time zone)."""
     m = _WINDOW_RE.match(spec.strip())
     if not m:
         raise ValueError("invalid processing window")
@@ -33,6 +34,7 @@ def _parse(spec: str):
 
 
 def processing_open(at: datetime | None = None) -> bool:
+    """True if documents are processed now: always with "always", else inside the window."""
     if settings.processing_window == "always":
         return True
     first, last, start, end, tz = _parse(settings.processing_window)
@@ -43,6 +45,7 @@ def processing_open(at: datetime | None = None) -> bool:
 
 
 def next_opening_iso(at: datetime | None = None) -> str | None:
+    """When the window next opens, as ISO time (for `processing_starts_at`); None with "always"."""
     if settings.processing_window == "always":
         return None
     first, last, start, _end, tz = _parse(settings.processing_window)

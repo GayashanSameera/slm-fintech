@@ -39,11 +39,13 @@ IMMUTABLE = "public, max-age=31536000, immutable"       # hashed file names neve
 
 
 def outputs(cfn, stack: str) -> dict:
+    """A stack's outputs as {OutputKey: OutputValue}."""
     s = cfn.describe_stacks(StackName=stack)["Stacks"][0]
     return {o["OutputKey"]: o["OutputValue"] for o in s.get("Outputs", [])}
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Build and publish the console (see the module docstring). Returns the exit code."""
     p = argparse.ArgumentParser(description="Build and publish the web console.")
     p.add_argument("env", choices=["dev", "prod"])
     p.add_argument("--profile")

@@ -6,6 +6,9 @@ never part of the public API: tenants cannot create tenants.
     # first tenant in prod, read+write key, no webhook
     uv run python scripts/create_tenant.py --env prod --name LYNEAR --profile lyndev
 
+    # store the key in AWS Secrets Manager instead of printing it
+    uv run python scripts/create_tenant.py --env prod --name LYNEAR --profile lyndev --secret-name slm/prod/api-keys/lynear
+
     # write the key to a private file instead of printing it (automation, smoke tests)
     uv run python scripts/create_tenant.py --env prod --name SMOKE-TEST --profile lyndev --key-file ~/.slm/smoke.key
 
@@ -72,12 +75,37 @@ def configure_environment(env: str) -> None:
     # operator's own admin credentials, not through the per-tenant role.
 
 
+def store_key_in_secrets_manager(env: str, secret_name: str, api_key: str, tenant_name: str) -> str:
+    """Save an API key as a Secrets Manager secret (created, or updated if it exists). Returns the ARN.
+
+    For client applications in this AWS account that read their key at run time. The key
+    is never printed. Encrypted with the platform's `logs` KMS key; any IAM principal in
+    the account that is allowed secretsmanager:GetSecretValue on this secret can read it.
+    """
+    import boto3
+
+    sm = boto3.client("secretsmanager", region_name=AWS_REGION)
+    description = f"SLM extraction API key for tenant {tenant_name} ({env}). Use as 'Authorization: Bearer <value>'."
+    try:
+        arn = sm.create_secret(Name=secret_name, Description=description, KmsKeyId=f"alias/slm-{env}-logs",
+                               SecretString=api_key,
+                               Tags=[{"Key": "app", "Value": "slm"}, {"Key": "tenant", "Value": tenant_name}])["ARN"]
+    except sm.exceptions.ResourceExistsException:
+        arn = sm.put_secret_value(SecretId=secret_name, SecretString=api_key)["ARN"]
+    return arn
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """Command-line options, with the cross-checks argparse can't express (https webhooks,
+    consent needs a name).
+    """
     p = argparse.ArgumentParser(description="Create a tenant and its first API key.")
     p.add_argument("--env", required=True, choices=["local", "dev", "prod"])
     p.add_argument("--name", required=True, help="Tenant display name, e.g. LYNEAR. Must be unique.")
     p.add_argument("--profile", help="AWS CLI profile of the target account, e.g. lyndev")
     p.add_argument("--key-file", help="Write the API key to this file (mode 600) instead of printing it.")
+    p.add_argument("--secret-name", help="Store the API key in AWS Secrets Manager under this name instead of "
+                                         "printing it, e.g. slm/prod/api-keys/lynear")
     p.add_argument("--read-only", action="store_true", help="Key may only read results (no uploads).")
     p.add_argument("--retention-days", type=int, default=30, choices=[7, 30, 90, 365])
     p.add_argument("--verification-mode", default="ai", choices=["ai", "checks_only"],
@@ -132,6 +160,9 @@ def create_webhook_secret(env: str, tenant_id: str) -> tuple[str, str]:
 
 
 def main(argv: list[str] | None = None) -> dict:
+    """Onboard one tenant: claim the name, optional webhook secret, settings, first API key.
+    Returns the ids and secrets (used by tests); prints a summary for the operator.
+    """
     args = parse_args(argv)
     if args.profile:
         os.environ["AWS_PROFILE"] = args.profile
@@ -172,7 +203,12 @@ def main(argv: list[str] | None = None) -> dict:
     print(f"  unmasked kinds    {', '.join(overrides['unmasked_kinds']) or '(none: everything masked)'}")
     print(f"  training consent  {'yes, by ' + args.consent_by if args.training_consent else 'no'}")
     print()
-    if args.key_file:
+    if args.secret_name:
+        if args.env == "local":
+            raise SystemExit("--secret-name needs an AWS environment (dev or prod).")
+        arn = store_key_in_secrets_manager(args.env, args.secret_name, api_key, args.name)
+        print(f"API key stored in Secrets Manager (not printed): {arn}")
+    elif args.key_file:
         key_path = Path(args.key_file).expanduser()
         key_path.parent.mkdir(parents=True, exist_ok=True)
         key_path.write_text(api_key + "\n")

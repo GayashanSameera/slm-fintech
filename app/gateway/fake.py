@@ -20,14 +20,19 @@ from .base import GatewayResult
 
 class FakeGateway:
     def __init__(self) -> None:
+        """No answers queued yet; every call will be recorded in `calls`."""
         self._responses: deque[str] = deque()
         self.calls: list[dict] = []
 
     def queue(self, *responses: str) -> FakeGateway:
+        """Queue the next answers, in order. Returns self, so calls can be chained."""
         self._responses.extend(responses)
         return self
 
     def generate(self, *, model_id, system, pages, instruction, thinking=False, max_tokens=8000):
+        """Record the call and return the next queued answer ("{}" when none is left),
+        reporting 100 input and 50 output tokens.
+        """
         self.calls.append({"model_id": model_id, "thinking": thinking, "instruction": instruction,
                            "pages": len(pages), "system": system})
         text = self._responses.popleft() if self._responses else "{}"

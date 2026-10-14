@@ -58,6 +58,9 @@ def create_resources() -> None:
 
 @pytest.fixture
 def aws():
+    """In-memory AWS (moto) with the platform's table, bucket and queues created, and the
+    app's cached AWS clients and model gateway reset, for one test.
+    """
     with mock_aws():
         aws_module.reset_caches()
         create_resources()

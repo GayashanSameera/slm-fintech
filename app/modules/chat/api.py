@@ -17,14 +17,17 @@ router = APIRouter()
 
 
 def _not_implemented():
+    """The 501 answer of the reserved chat routes (requirement FR-8: chat comes in a later release)."""
     raise ApiError(501, "not_implemented", "The chat API is not available yet.")
 
 
 @router.post("/chat/sessions")
 def create_session(principal: Principal = Depends(require_scope("extractions:read"))):
+    """POST /v1/chat/sessions: reserved for the chatbot API, answers 501 for now."""
     _not_implemented()
 
 
 @router.post("/chat/sessions/{session_id}/messages")
 def send_message(session_id: str, principal: Principal = Depends(require_scope("extractions:read"))):
+    """POST /v1/chat/sessions/{id}/messages: reserved for the chatbot API, answers 501 for now."""
     _not_implemented()

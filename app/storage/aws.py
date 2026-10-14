@@ -43,6 +43,7 @@ _REFRESH_MARGIN_S = settings.upload_url_ttl_seconds + 60
 
 @lru_cache(maxsize=1)
 def platform_session() -> boto3.Session:
+    """The Lambda's OWN credentials (its IAM role): for non-tenant data, queues and Bedrock."""
     return boto3.Session(region_name=settings.region)
 
 
@@ -80,6 +81,7 @@ def tenant_session(tenant_id: str) -> boto3.Session:
 # Each takes an optional session so the same helper works for platform and tenant access.
 
 def dynamodb_table(session: boto3.Session | None = None):
+    """The platform table, accessed with `session` (a tenant session for tenant data)."""
     s = session or platform_session()
     return s.resource("dynamodb", endpoint_url=settings.dynamodb_endpoint, config=_BOTO_CONFIG).Table(
         settings.table
@@ -97,6 +99,7 @@ def s3_client(session: boto3.Session | None = None, public: bool = False):
 
 @lru_cache(maxsize=1)
 def sqs_client():
+    """One SQS client per process (queues hold only ids, never tenant data)."""
     return platform_session().client("sqs", endpoint_url=settings.sqs_endpoint, config=_BOTO_CONFIG)
 
 

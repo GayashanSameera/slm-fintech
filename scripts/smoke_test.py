@@ -31,6 +31,7 @@ from _aws import REGION, session  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run all checks against the deployed environment. Returns 0 only if every check passed."""
     import httpx
 
     from tests.helpers.sample_docs import make_invoice_png, make_statement_pdf
@@ -48,11 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     ok = True
 
     def check(label: str, cond: bool, detail: str = "") -> None:
+        """Print one check's result and remember whether everything passed so far."""
         nonlocal ok
         ok &= bool(cond)
         print(f"  {'✓' if cond else '✗'} {label}{(': ' + detail) if detail else ''}")
 
     def wait_final(job_id: str, limit_s: int = 180) -> dict:
+        """Long-poll a job until it is final (or `limit_s` seconds pass) and return it."""
         deadline = time.monotonic() + limit_s
         while True:
             body = httpx.get(f"{api}/v1/extractions/{job_id}?wait=20", headers=auth, timeout=40).json()

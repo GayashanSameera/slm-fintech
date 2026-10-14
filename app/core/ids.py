@@ -22,15 +22,18 @@ JOB_ID_RE = re.compile(r"^ext_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 def new_job_id() -> str:
+    """A new job id: "ext_" + a ULID (unique, and sorts by creation time)."""
     return f"ext_{ULID()}"
 
 
 def new_key_id() -> str:
     # Short, readable id for an API key (the secret is generated separately).
+    """A new API-key id (public: shown in key lists and audit records)."""
     return f"key_{str(ULID())[-10:].lower()}"
 
 
 def new_tenant_id() -> str:
+    """A new tenant id: "t_" + a lower-case ULID."""
     return f"t_{str(ULID()).lower()}"
 
 

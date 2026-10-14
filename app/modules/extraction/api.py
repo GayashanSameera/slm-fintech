@@ -78,6 +78,7 @@ def list_extractions(
     cursor: str | None = None,
     principal: Principal = Depends(require_scope("extractions:read")),
 ):
+    """GET /v1/extractions: the caller's jobs, newest first, without results (FR-2.8)."""
     return service.list_jobs(principal, limit, cursor)
 
 
@@ -94,6 +95,7 @@ async def get_extraction(
 
 @router.delete("/extractions/{job_id}", status_code=204)
 def delete_extraction(job_id: str, principal: Principal = Depends(require_scope("extractions:write"))):
+    """DELETE /v1/extractions/{id}: delete the job, its files, result and corrections (FR-2.9)."""
     service.delete_job(principal, job_id)
     return Response(status_code=204)
 
@@ -101,6 +103,7 @@ def delete_extraction(job_id: str, principal: Principal = Depends(require_scope(
 @router.post("/extractions/{job_id}/corrections", status_code=201)
 async def add_corrections(job_id: str, request: Request,
                           principal: Principal = Depends(require_scope("extractions:write"))):
+    """POST /v1/extractions/{id}/corrections: store field corrections for a finished job (FR-2.12)."""
     try:
         body = await request.json()
     except ValueError:

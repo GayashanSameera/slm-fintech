@@ -1,4 +1,7 @@
-/* Console styles: plain CSS, light and dark mode, usable down to phone width. */
+/* Console styles: plain CSS (no framework), light and dark mode, usable down to phone width.
+   Colours are variables on :root, redefined for dark mode, so components never hard-code a colour.
+   Layout: header bar, then a two-column grid (upload + jobs | job detail) that becomes one
+   column below 900 px. */
 :root {
   --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
   --accent: #2457d6; --accent-soft: #e8eefc; --ok: #137a48; --ok-soft: #e3f4ea;

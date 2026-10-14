@@ -25,6 +25,9 @@ REQUIRED_HEADER = ("account_number", "ifsc", "period_from", "period_to", "openin
 
 
 def coverage_problems(stmt, page_texts: list[str]) -> list[str]:
+    """Codes for anything the parser may have MISSED (rows, closing balance, header fields).
+    An empty list means the coverage is complete.
+    """
     problems: list[str] = []
     if not stmt.transactions:
         return ["no_transactions"]

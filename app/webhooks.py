@@ -41,11 +41,15 @@ log = get_logger(__name__)
 
 
 def build_event(job_id: str, status: str) -> bytes:
+    """The webhook body: event name, job id, status and time. Deliberately NO extracted data."""
     return json.dumps({"event": f"extraction.{status}", "job_id": job_id, "status": status,
                        "occurred_at": now_iso()}, separators=(",", ":")).encode()
 
 
 def sign(secret: bytes, body: bytes, ts: int | None = None) -> str:
+    """The X-Signature header value: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, "<t>." + body)>.
+    The timestamp is inside the signed text, so an old event can't be replayed.
+    """
     ts = ts or int(time.time())
     mac = hmac.new(secret, f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
     return f"t={ts},v1={mac}"

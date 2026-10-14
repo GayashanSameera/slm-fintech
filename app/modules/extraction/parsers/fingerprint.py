@@ -18,6 +18,7 @@ PARSERS: list[StatementParser] = [
 
 
 def pick_parser(first_page_text: str | None) -> StatementParser | None:
+    """The first registered parser whose fingerprint (marker text + column labels) is on page 1, or None."""
     if not first_page_text:
         return None
     for parser in PARSERS:

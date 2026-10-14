@@ -97,6 +97,7 @@ _MODEL_USAGE_ORDER = ("model_id", "calls", "input_tokens", "output_tokens", "cac
 
 
 def _in_order(data: dict, order: tuple) -> dict:
+    """A copy of `data` with the keys of `order` first, in that order, then any others."""
     return {k: data[k] for k in order if k in data} | {k: v for k, v in data.items() if k not in order}
 
 
@@ -214,6 +215,9 @@ async def create_direct(principal, doc_type: str | None, data: bytes, wait: int)
 # ---------------------------------------------------------------------------------------
 
 def create_presigned(principal, doc_type: str | None) -> tuple[int, dict, dict]:
+    """Upload-link flow, step 1: create the job (awaiting_upload) and return a one-time,
+    write-only S3 POST for exactly its source key (201). Intake takes over when the file arrives.
+    """
     tenant = get_tenant_settings(principal.tenant_id)
     job_id = new_job_id()
     key = keys.source_key(principal.tenant_id, job_id)
@@ -247,6 +251,9 @@ def create_presigned(principal, doc_type: str | None) -> tuple[int, dict, dict]:
 # ---------------------------------------------------------------------------------------
 
 async def get_job(principal, job_id: str, wait: int) -> tuple[dict, dict]:
+    """GET one job, optionally waiting up to `wait` seconds for it to finish. Another tenant's
+    job id gives the same 404 as an unknown one (security.md §4.1). Returns (body, headers).
+    """
     if not is_job_id(job_id):
         raise not_found()
     repo = JobRepo(principal.tenant_id)
@@ -258,6 +265,7 @@ async def get_job(principal, job_id: str, wait: int) -> tuple[dict, dict]:
 
 
 def list_jobs(principal, limit: int, cursor: str | None) -> dict:
+    """One page of the tenant's jobs, newest first, without results (fetch a job to see its result)."""
     if cursor and not is_job_id(cursor):
         raise ApiError(400, "invalid_cursor", "The cursor is not valid.")
     items, next_cursor = JobRepo(principal.tenant_id).list(limit=max(1, min(limit, 100)), cursor=cursor)

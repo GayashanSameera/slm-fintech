@@ -63,25 +63,31 @@ class SafeLogger:
     """A logger that only ever writes allowlisted fields."""
 
     def __init__(self, name: str):
+        """Wrap the standard logger called `name`."""
         self._log = logging.getLogger(name)
 
     @staticmethod
     def _filter(fields: dict) -> dict:
         # Keep allowlisted keys only. Values are converted to str by json.dumps(default=str).
+        """Keep only allowlisted field names; anything else is dropped silently."""
         return {k: v for k, v in fields.items() if k in ALLOWED_FIELDS}
 
     def _emit(self, level: int, event: str, fields: dict) -> None:
+        """Write one JSON line: time, level, event name and the allowlisted fields."""
         record = {"ts": round(time.time(), 3), "level": logging.getLevelName(level), "event": event}
         record.update(self._filter(fields))
         self._log.log(level, json.dumps(record, default=str))
 
     def info(self, event: str, **fields) -> None:
+        """Log an INFO event, e.g. log.info("job_succeeded", job_id=..., pages=3)."""
         self._emit(logging.INFO, event, fields)
 
     def warning(self, event: str, **fields) -> None:
+        """Log a WARNING event (allowlisted fields only)."""
         self._emit(logging.WARNING, event, fields)
 
     def error(self, event: str, exc: BaseException | None = None, **fields) -> None:
+        """Log an ERROR event. An exception is logged by its TYPE only, never its message."""
         if exc is not None:
             # Type name only. NEVER str(exc) or the traceback's local variables.
             fields["exc_type"] = type(exc).__name__
@@ -89,6 +95,7 @@ class SafeLogger:
 
 
 def get_logger(name: str) -> SafeLogger:
+    """A SafeLogger for module `name` (configures stdout logging on first use)."""
     from app.config import settings  # imported here to avoid a circular import at startup
 
     _configure_root(settings.log_level)

@@ -21,6 +21,7 @@ def _parse(doc_type: str, data: dict):
 
 
 def _codes(doc_type: str, data: dict) -> list[str]:
+    """Validate `data` with the type's schema, run its checks, return the failure codes."""
     return [f.code for f in run_checks(doc_type, _parse(doc_type, data))]
 
 
@@ -28,6 +29,7 @@ def _codes(doc_type: str, data: dict) -> list[str]:
 
 def _invoice(total: str) -> dict:
     # 600 + 400 = 1000 subtotal; 9% CGST + 9% SGST = 180; correct total = 1180.00
+    """An invoice that adds up (600 + 400 = 1000; +18% GST = 1180) except for `total`."""
     return {
         "line_items": [{"description": "Widget", "amount": "600.00"},
                        {"description": "Service", "amount": "400.00"}],
@@ -66,6 +68,7 @@ def test_check_messages_carry_numbers_for_the_model():
 # --- bank statement -------------------------------------------------------------------------
 
 def _statement(rows: list[tuple[str | None, str | None, str]], closing: str) -> dict:
+    """A statement opening at 10,000 with the given (debit, credit, balance) rows."""
     return {
         "opening_balance": "10000.00", "closing_balance": closing, "ifsc": "HDFC0001234",
         "transactions": [{"debit": d, "credit": c, "balance": b} for d, c, b in rows],

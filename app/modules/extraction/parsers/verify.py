@@ -70,6 +70,7 @@ def parser_view(statement) -> dict:
 
 
 def _get(data: dict, path: str):
+    """Value at a dotted path such as "first_transaction.date"; None if any part is missing."""
     node = data
     for part in path.split("."):
         node = node.get(part) if isinstance(node, dict) else None
@@ -104,6 +105,10 @@ def compare(model_reading: dict, parsed: dict) -> list[str]:
 
 
 def verify(pages: list[dict], statement, gateway: ModelGateway, model_id: str) -> VerifyResult:
+    """Independent AI check of a parser result: Nova Lite reads the key facts from the page
+    images without seeing the parser's output, and `compare` checks them field by field.
+    One model call (~150 output tokens); the result can only reject, never change a value.
+    """
     res = gateway.generate(
         model_id=model_id,
         system=VERIFY_SYSTEM,

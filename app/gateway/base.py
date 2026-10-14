@@ -38,4 +38,6 @@ class ModelGateway(Protocol):
         instruction: str,        # the per-call request, e.g. "Extract ..." + problems to fix
         thinking: bool = False,  # Claude only: think before answering (used on retries)
         max_tokens: int = 8000,
-    ) -> GatewayResult: ...
+    ) -> GatewayResult:
+        """Ask a model about the pages; return its raw text answer and token counts."""
+        ...

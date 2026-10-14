@@ -46,10 +46,14 @@ _SKIP_SUFFIXES = {".pyc", ".pyo"}
 
 
 def _run(cmd: list[str]) -> str:
+    """Run a command in the repository root and return its output (raises if it fails)."""
     return subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True, text=True).stdout
 
 
 def build() -> Path:
+    """Build dist/lambda-<hash>.zip: locked dependencies as Linux ARM64 wheels + app/, with fixed
+    file order and timestamps so identical inputs give an identical file. Returns its path.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         pkg = tmp_path / "pkg"

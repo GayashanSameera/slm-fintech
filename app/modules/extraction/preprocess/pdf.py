@@ -32,6 +32,9 @@ _MAX_RENDER_EDGE = 4000
 
 
 def open_pdf(data: bytes) -> pdfium.PdfDocument:
+    """Open a PDF with PDFium, refusing encrypted (password) files, corrupt files, empty files
+    and files over the page limit (FR-2.5).
+    """
     try:
         pdf = pdfium.PdfDocument(data)
     except pdfium.PdfiumError as e:

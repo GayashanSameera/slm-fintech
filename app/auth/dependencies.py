@@ -29,6 +29,9 @@ from .principal import Principal, parse_bearer, resolve_api_key
 
 
 def current_principal(request: Request) -> Principal:
+    """Who is calling: from the API Gateway authorizer's context in AWS, or by checking the
+    Authorization header locally (same function the authorizer uses).
+    """
     event = request.scope.get("aws.event")
     if event is not None and not settings.is_local:
         ctx = (event.get("requestContext") or {}).get("authorizer") or {}
@@ -40,6 +43,9 @@ def current_principal(request: Request) -> Principal:
 
 
 def require_scope(scope: str) -> Callable[[Request], Principal]:
+    """A FastAPI dependency that resolves the caller and requires `scope`; it also stores the
+    caller on request.state for the per-request audit record.
+    """
     def dependency(request: Request) -> Principal:
         principal = current_principal(request)
         principal.require(scope)

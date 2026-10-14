@@ -90,6 +90,13 @@ def _keep_for_training(tenant, outcome: ExtractionOutcome, page_texts: list[str]
 
 
 def process_job(tenant_id: str, job_id: str, receive_count: int = 1) -> None:
+    """Process ONE queued job end to end (stages 6-12 of docs/implementation-flow.md):
+    claim it, wait for the malware scan (direct flow), read and prepare the file, extract
+    (Rung 0 parser or AI ladder), store the masked result with its usage, delete the source,
+    record dedup + usage, queue the webhook.
+
+    Raises TemporaryError when SQS should deliver the message again (see the module docstring).
+    """
     repo = JobRepo(tenant_id)
     if not repo.claim(job_id, LEASE_SECONDS):
         log.info("job_skipped", tenant_id=tenant_id, job_id=job_id)   # finished, or another worker has it

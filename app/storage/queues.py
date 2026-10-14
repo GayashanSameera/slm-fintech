@@ -22,6 +22,7 @@ from app.storage.aws import queue_url, sqs_client
 
 
 def send(queue_name: str, body: dict) -> None:
+    """Send one JSON message to a queue by name (the body holds ids only)."""
     sqs_client().send_message(QueueUrl=queue_url(queue_name), MessageBody=json.dumps(body))
 
 
@@ -40,4 +41,5 @@ def receive(queue_name: str, max_messages: int = 5, wait_seconds: int = 10) -> l
 
 
 def delete(queue_name: str, receipt_handle: str) -> None:
+    """Delete a received message (local worker loop only; in AWS, Lambda does this)."""
     sqs_client().delete_message(QueueUrl=queue_url(queue_name), ReceiptHandle=receipt_handle)

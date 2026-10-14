@@ -29,6 +29,7 @@ app = FastAPI(title="SLM Fintech API", version="1.0.0", docs_url="/docs", redoc_
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
     # One error shape for every error: {"error": {"code": ..., "message": ...}}.
+    """Every ApiError becomes {"error": {"code", "message"}} with its HTTP status."""
     return JSONResponse(status_code=exc.status, headers=exc.headers,
                         content={"error": {"code": exc.code, "message": exc.message}})
 
@@ -37,6 +38,9 @@ async def api_error_handler(request: Request, exc: ApiError):
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     # FastAPI's default 422 body echoes the submitted input. NFR-S8 forbids that:
     # report field locations and error types only.
+    """Invalid requests: 400 with field names and error types only, never the submitted
+    values (FastAPI's default 422 would echo them; NFR-S8).
+    """
     details = [{"field": ".".join(str(p) for p in e["loc"]), "error": e["type"]} for e in exc.errors()]
     return JSONResponse(status_code=400, content={"error": {
         "code": "invalid_request", "message": "The request is not valid.", "details": details}})
@@ -45,6 +49,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 @app.exception_handler(Exception)
 async def unexpected_error_handler(request: Request, exc: Exception):
     # Log the exception TYPE only (never its message: it may contain data).
+    """Any other exception: a generic 500. Only the exception TYPE is logged, never its message."""
     log.error("unhandled_error", exc=exc, path=request.url.path)
     return JSONResponse(status_code=500, content={"error": {
         "code": "internal_error", "message": "Something went wrong. Please retry."}})
@@ -93,6 +98,7 @@ async def audit_every_request(request: Request, call_next):
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():
+    """GET /healthz: liveness check for monitoring. No key needed, no data touched."""
     return {"ok": True}
 
 

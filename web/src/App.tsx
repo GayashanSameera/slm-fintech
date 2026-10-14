@@ -15,11 +15,15 @@ import { Uploader, type Flow } from "./components/Uploader";
 import { JobList } from "./components/JobList";
 import { JobDetail } from "./components/JobDetail";
 
+// Synthetic sample documents the site may include (see Uploader). The buttons only appear for
+// samples that are actually deployed (checked with a HEAD request on start-up).
 const SAMPLES = [
   { name: "sample-statement.pdf", label: "Bank statement PDF", title: "Digital statement: Python parser + reconciliation + AI check" },
   { name: "sample-invoice.png", label: "Invoice image", title: "Scanned invoice: read by Claude Haiku" },
 ];
 
+// Web storage can throw (private mode, blocked storage): every access is wrapped so the console
+// still works, just without remembering things.
 const store = {
   get: (s: Storage, k: string) => { try { return s.getItem(k); } catch { return null; } },
   set: (s: Storage, k: string, v: string) => { try { s.setItem(k, v); } catch { /* private mode */ } },
@@ -34,9 +38,9 @@ export default function App() {
   const [jobs, setJobs] = useState<Map<string, TrackedJob>>(new Map());
   const [selected, setSelected] = useState<string>();
   const [availableSamples, setAvailableSamples] = useState<typeof SAMPLES>([]);
-  const polling = useRef(new Set<string>());
-  const names = useRef<Record<string, string>>(JSON.parse(store.get(localStorage, "slm-names") || "{}"));
-  const [, tick] = useState(0);
+  const polling = useRef(new Set<string>());           // ids being long-polled (never twice at once)
+  const names = useRef<Record<string, string>>(JSON.parse(store.get(localStorage, "slm-names") || "{}"));  // job id -> file name
+  const [, tick] = useState(0);                         // re-render every second for the timers
 
   const client = useMemo(() => new ApiClient(settings), [settings]);
 
@@ -71,6 +75,8 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  // Insert or update one tracked job. `replaceId` swaps a temporary local id ("local-...") for the
+  // real job id once the API has answered.
   const upsert = useCallback((id: string, update: (prev?: TrackedJob) => TrackedJob, replaceId?: string) => {
     setJobs((prev) => {
       const next = new Map(prev);
@@ -99,6 +105,8 @@ export default function App() {
     }
   }, [client, upsert]);
 
+  // Fetch the caller's recent jobs (also those sent from other devices or sessions), merge them
+  // with what this tab already knows, and resume polling any that aren't finished.
   async function loadList() {
     try {
       const list = await client.listJobs(30);
@@ -116,6 +124,8 @@ export default function App() {
   }
 
   // --- send files ----------------------------------------------------------------------------
+  // Send each file: show it at once under a temporary id, then replace that with the API's job
+  // (or show the error), and long-poll it until it is final.
   function sendFiles(files: File[], documentType: string, flow: Flow) {
     for (const file of files) {
       const tmp = `local-${Math.random().toString(36).slice(2)}`;
@@ -135,6 +145,7 @@ export default function App() {
     }
   }
 
+  // Select a job; jobs from the list endpoint have no result, so fetch it once when needed.
   async function openJob(id: string) {
     setSelected(id);
     const t = jobs.get(id);
@@ -143,6 +154,7 @@ export default function App() {
     }
   }
 
+  // Delete through the API (job, file, result and corrections), after confirmation.
   async function deleteJob(id: string) {
     if (!confirm("Delete this job, its file and its result? This can't be undone.")) return;
     await client.deleteJob(id).catch(() => undefined);
@@ -152,6 +164,7 @@ export default function App() {
     setSelected(undefined);
   }
 
+  // Key accepted from the dialog: keep it for this tab only, then reconnect.
   function saveSettings(s: Settings) {
     store.set(sessionStorage, "slm-key", s.apiKey);
     if (s.apiUrl !== config?.apiUrl) store.set(sessionStorage, "slm-url", s.apiUrl);
@@ -160,6 +173,7 @@ export default function App() {
     setSettings(s);
   }
 
+  // Forget the key and everything shown: hand the computer to someone else safely.
   function disconnect() {
     store.del(sessionStorage, "slm-key");
     setJobs(new Map());

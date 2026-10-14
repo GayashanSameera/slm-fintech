@@ -26,11 +26,13 @@ class Principal:
     scopes: frozenset[str] = field(default_factory=frozenset)
 
     def require(self, scope: str) -> None:
+        """Raise 403 insufficient_scope unless this key has `scope` (e.g. "extractions:write")."""
         if scope not in self.scopes:
             raise ApiError(403, "insufficient_scope", "This API key does not have the required scope.")
 
 
 def parse_bearer(header: str | None) -> str | None:
+    """The key from an "Authorization: Bearer <key>" header, or None if it isn't one."""
     if not header or not header.startswith("Bearer "):
         return None
     token = header[len("Bearer "):].strip()

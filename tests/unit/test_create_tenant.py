@@ -17,6 +17,7 @@ _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "create_tenant.py"
 
 
 def _load_script():
+    """Import scripts/create_tenant.py as a module (scripts/ is not a package)."""
     spec = importlib.util.spec_from_file_location("create_tenant", _SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

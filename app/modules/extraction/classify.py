@@ -30,6 +30,12 @@ class Classification:
 
 
 def classify(pages: list[dict], gateway: ModelGateway, models: list[str], min_confidence: float) -> Classification:
+    """Detect the document type from page 1 (image + the first 1,500 characters of text).
+
+    Asks `models` in order (cheapest first) until one answers a known type with at least
+    `min_confidence`; otherwise accepts the best answer at 0.5 or above; otherwise raises
+    JobError("unrecognised_document_type"), carrying the calls so their tokens are metered.
+    """
     first_page = [{"image": pages[0].get("image"), "text": (pages[0].get("text") or "")[:1500]}]
     calls: list[GatewayResult] = []
     best: tuple[str, float] | None = None

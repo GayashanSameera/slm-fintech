@@ -23,6 +23,11 @@ from .base import GatewayResult
 
 class OllamaGateway:
     def generate(self, *, model_id, system, pages, instruction, thinking=False, max_tokens=8000):
+        """Same contract as BedrockGateway.generate, for a local Ollama model (developer laptop only).
+
+        Page images go in the message's `images`, text layers and instruction in its text. No retries
+        or token caching here: this gateway is for trying prompts locally, never for production.
+        """
         content: list[dict] = []
         for number, page in enumerate(pages, start=1):
             content.append({"type": "text", "text": f"<page number='{number}'>"})

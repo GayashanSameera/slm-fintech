@@ -41,6 +41,9 @@ SCAN_TIMEOUT_SECONDS = 300   # if no scan result arrives in 5 minutes, fail the 
 
 
 def on_object_created(key: str) -> None:
+    """S3 "Object Created": the upload arrived -> awaiting_upload to scanning, with a
+    5-minute deadline for the scan result. Keys that aren't job sources are ignored.
+    """
     parsed = keys.parse_source_key(key)
     if not parsed:
         return                       # not an upload key: ignore (e.g. result.json, training copies)
@@ -53,6 +56,9 @@ def on_object_created(key: str) -> None:
 
 
 def on_scan_result(key: str, scan_status: str) -> None:
+    """GuardDuty's verdict for an upload: clean -> queued (and sent to the interactive queue);
+    malware -> failed + file deleted; anything else -> failed ("scan_failed"): we can't prove it's safe.
+    """
     parsed = keys.parse_source_key(key)
     if not parsed:
         return

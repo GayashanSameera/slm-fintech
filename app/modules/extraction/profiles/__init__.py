@@ -36,6 +36,11 @@ class Profile:
 @lru_cache(maxsize=8)
 def load_profile(name: str = "default") -> Profile:
     # Profile names are plain identifiers; never let a setting point outside this folder.
+    """Read profiles/<name>.yaml into a Profile (cached: each profile is read once per process).
+
+    The name is checked to be a plain identifier first, so a setting can never point the
+    loader at a file outside this folder.
+    """
     if not name.replace("-", "").replace("_", "").isalnum():
         raise ValueError("invalid profile name")
     raw = yaml.safe_load((_DIR / f"{name}.yaml").read_text())

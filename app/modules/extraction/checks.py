@@ -38,10 +38,14 @@ class CheckFailure:
 
 
 def _close(a: Decimal, b: Decimal) -> bool:
+    """True when two amounts differ by at most one paisa (TOLERANCE), to allow for printed rounding."""
     return abs(a - b) <= TOLERANCE
 
 
 def check_invoice(inv) -> list[CheckFailure]:
+    """Invoice: line items add up to the subtotal; subtotal + CGST + SGST + IGST = total;
+    GSTIN and PAN formats of seller and buyer.
+    """
     out: list[CheckFailure] = []
     amounts = [to_decimal(li.amount) for li in inv.line_items if li.amount is not None]
     subtotal = to_decimal(inv.subtotal)
@@ -63,6 +67,9 @@ def check_invoice(inv) -> list[CheckFailure]:
 
 
 def check_bank_statement(st) -> list[CheckFailure]:
+    """Bank statement: every row's running balance, opening + credits - debits = closing,
+    and the IFSC format. A wrong row is reported once (later rows would only cascade).
+    """
     out: list[CheckFailure] = []
     opening = to_decimal(st.opening_balance)
     closing = to_decimal(st.closing_balance)
@@ -95,6 +102,7 @@ def check_bank_statement(st) -> list[CheckFailure]:
 
 
 def check_payslip(p) -> list[CheckFailure]:
+    """Payslip: earnings add up to gross pay; gross - deductions = net pay; PAN format."""
     out: list[CheckFailure] = []
     gross = to_decimal(p.gross_pay)
     net = to_decimal(p.net_pay)
@@ -111,6 +119,9 @@ def check_payslip(p) -> list[CheckFailure]:
 
 
 def check_identity(doc) -> list[CheckFailure]:
+    """Identity document: PAN format (for PAN cards) and expiry. An expired document is a
+    DOCUMENT_ONLY finding: reported as a warning, never a reason to re-extract.
+    """
     out: list[CheckFailure] = []
     if doc.id_type == "pan" and doc.id_number and not PAN_RE.match(doc.id_number.replace(" ", "").upper()):
         out.append(CheckFailure("pan_format", "The PAN number does not have a valid format."))
@@ -121,6 +132,7 @@ def check_identity(doc) -> list[CheckFailure]:
 
 
 def check_kyc(form) -> list[CheckFailure]:
+    """KYC form: PAN format, and that name, date of birth and PAN are present."""
     out: list[CheckFailure] = []
     if form.pan and not PAN_RE.match(form.pan.replace(" ", "").upper()):
         out.append(CheckFailure("pan_format", "The PAN does not have a valid format."))
@@ -145,4 +157,5 @@ DOCUMENT_ONLY = {"document_expired", "required_fields_missing"}
 
 
 def run_checks(doc_type: str, parsed) -> list[CheckFailure]:
+    """Run the consistency checks for `doc_type` on a validated result; [] means all passed."""
     return _CHECKS[doc_type](parsed)

@@ -22,6 +22,9 @@ log = get_logger(__name__)
 
 
 def handle_stream(event: dict, context=None) -> dict:
+    """Lambda entry point (DynamoDB stream, TTL deletions only): delete each expired job's S3
+    folder. Returns the number of objects deleted.
+    """
     deleted = 0
     for record in event.get("Records", []):
         if record.get("eventName") != "REMOVE":

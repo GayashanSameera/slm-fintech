@@ -100,6 +100,9 @@ _RETRYABLE = {"ThrottlingException", "ServiceUnavailableException", "InternalSer
 
 class BedrockGateway:
     def __init__(self) -> None:
+        """One bedrock-runtime client with adaptive retries and a 110 s read timeout
+        (a long statement can take a while to generate).
+        """
         self.client = platform_session().client(
             "bedrock-runtime",
             region_name=settings.region,
@@ -109,6 +112,9 @@ class BedrockGateway:
 
     def generate(self, *, model_id, system, pages, instruction, thinking=False, max_tokens=8000):
         # Belt and braces: IAM already blocks unapproved models, but fail fast with a clear error.
+        """One Converse call (request built by build_request). Throttling and other transient
+        Bedrock errors become TemporaryError, so SQS retries the job later.
+        """
         if not model_id.startswith(APPROVED_PREFIXES):
             raise ValueError("model not approved")
 

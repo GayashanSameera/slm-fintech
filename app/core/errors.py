@@ -27,6 +27,7 @@ class ApiError(Exception):
     """An error returned to the API client as {"error": {"code": ..., "message": ...}}."""
 
     def __init__(self, status: int, code: str, message: str, headers: dict[str, str] | None = None):
+        """status: HTTP status; code: stable machine-readable code; message: fixed human text."""
         super().__init__(code)
         self.status = status
         self.code = code
@@ -38,6 +39,7 @@ class JobError(Exception):
     """A permanent problem with the document. The job fails with ``code``."""
 
     def __init__(self, code: str):
+        """code: the stable reason the job failed, e.g. "too_many_pages"."""
         super().__init__(code)
         self.code = code
 
@@ -50,8 +52,10 @@ class TemporaryError(Exception):
 def not_found() -> ApiError:
     # Also used for OTHER tenants' job ids, so the caller cannot tell whether
     # a job exists in another tenant (security.md §4.1).
+    """404 not_found: also for other tenants' ids, so nobody can tell whether they exist."""
     return ApiError(404, "not_found", "Extraction not found.")
 
 
 def unauthorized() -> ApiError:
+    """401 unauthorized: missing or invalid API key."""
     return ApiError(401, "unauthorized", "Missing or invalid API key.")

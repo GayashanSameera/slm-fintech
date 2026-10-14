@@ -51,6 +51,7 @@ def group_into_lines(words: list[dict], tolerance: float = 3.0) -> list[list[dic
 
 
 def line_text(line: list[dict]) -> str:
+    """The words of one line joined with spaces."""
     return " ".join(w["text"] for w in line)
 
 
@@ -130,6 +131,9 @@ class StatementParser:
         return None
 
     def parse_rows(self, lines: list[list[dict]]) -> list[dict]:
+        """Transaction rows of one page: lines below the column header, up to the table's end
+        label. A line starting with a date opens a row; other lines continue its description.
+        """
         found = self._header_line(lines)
         if not found:
             return []                      # a page without a table (e.g. a summary page)

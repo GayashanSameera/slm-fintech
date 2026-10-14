@@ -18,6 +18,7 @@ from app.modules.extraction.masking import has_aadhaar_markers, mask, mask_aadha
 
 
 def _mask(result: dict, strict: bool = False, unmasked: set[str] | None = None) -> dict:
+    """mask() with the given strict mode and tenant-unmasked kinds."""
     return mask(result, strict_aadhaar=strict, unmasked_kinds=unmasked or set())
 
 

@@ -60,6 +60,7 @@ class TenantSettings:
 
     @property
     def consented_to_training(self) -> bool:
+        """True only with a recorded, written consent to keep documents for training (NFR-C2)."""
         return bool(self.training_consent and self.training_consent.get("given"))
 
 
@@ -69,6 +70,9 @@ def hash_api_key(api_key: str) -> str:
 
 
 def get_tenant_settings(tenant_id: str) -> TenantSettings:
+    """The tenant's settings (PROFILE item), read through the tenant's own scoped session.
+    Unknown or missing fields fall back to the dataclass defaults.
+    """
     table = dynamodb_table(tenant_session(tenant_id))
     item = table.get_item(Key={"PK": keys.tenant_pk(tenant_id), "SK": "PROFILE"}).get("Item") or {}
     data = {k: v for k, v in from_ddb(item).items() if k in TenantSettings.__dataclass_fields__}
@@ -79,6 +83,9 @@ def get_tenant_settings(tenant_id: str) -> TenantSettings:
 # --- Admin operations (used by scripts/create_tenant.py, not by the public API) --------
 
 def create_tenant(tenant_id: str, name: str, **overrides: Any) -> TenantSettings:
+    """Admin operation (scripts/create_tenant.py): create the tenant's PROFILE item with the
+    default settings plus `overrides`. Refuses to overwrite an existing tenant.
+    """
     table = dynamodb_table()   # admin credentials of whoever runs the script
     item = {"PK": keys.tenant_pk(tenant_id), "SK": "PROFILE", "name": name,
             "created_at": now_iso(), **DEFAULT_SETTINGS, **overrides}

@@ -51,6 +51,7 @@ def _squash(text) -> str:
 
 
 def _amounts_on(line: str) -> list[Decimal]:
+    """Every money token on a line, as positive Decimals, sorted (the sign/column isn't in the text)."""
     out = []
     for token in line.split():
         if _MONEY.match(token):
@@ -62,6 +63,7 @@ def _amounts_on(line: str) -> list[Decimal]:
 
 
 def _lines(page_texts: list[str]) -> list[str]:
+    """All non-empty text lines of all pages, in reading order."""
     return [ln.strip() for text in page_texts for ln in (text or "").splitlines() if ln.strip()]
 
 

@@ -1,5 +1,14 @@
-// Everything about one job: status timeline, how it was read and verified, tokens,
-// warnings, and the result as tables or raw JSON.
+// Everything about one job, top to bottom:
+//   1. file name + Delete
+//   2. status timeline (the stages of the flow the job used)
+//   3. verdict: "All checks passed" (green) or "Review needed" with each warning explained
+//   4. facts: status, type, read by (parser or which AI model), verified by, pages, time,
+//      tokens, AI cost, job id
+//   5. per-model token and cost table
+//   6. the result as readable tables, or the raw JSON exactly as the API returned it
+//
+// Everything shown comes from the API's job object (docs/integration-guide.md, section 6);
+// only the file name and timer are local to this browser.
 
 import { useState } from "react";
 import type { TrackedJob } from "../types";
@@ -24,6 +33,8 @@ const WARNING_HELP: Record<string, string> = {
   document_type_mismatch: "Nothing of the requested type was found: check the file and type.",
 };
 
+// The stages a job goes through. The upload-link flow has two extra steps before the queue
+// (upload received, malware scan). A failed or expired job marks the last step in red.
 function Timeline({ status, flow }: { status: string; flow?: string }) {
   const steps = flow === "presigned"
     ? [["awaiting_upload", "uploaded"], ["scanning", "malware scan"], ["queued", "queued"], ["processing", "extracting"], ["succeeded", "done"]]
@@ -40,6 +51,8 @@ function Timeline({ status, flow }: { status: string; flow?: string }) {
   );
 }
 
+// One value in a table: "—" for null/empty, yes/no for booleans, Indian digit grouping for
+// money (display only: the API value stays an exact 2-decimal string), JSON for objects.
 function Cell({ v }: { v: unknown }) {
   if (v === null || v === undefined || v === "") return <span className="null">—</span>;
   if (typeof v === "boolean") return <>{v ? "yes" : "no"}</>;
@@ -47,6 +60,8 @@ function Cell({ v }: { v: unknown }) {
   return <>{isMoney(v) ? money(v as string) : String(v)}</>;
 }
 
+// A table from a list of objects (transactions, line items, earnings, ...). The columns are
+// every key seen in any row, so rows with missing fields still line up.
 function Table({ rows }: { rows: Record<string, unknown>[] }) {
   const cols = [...new Set(rows.flatMap((r) => Object.keys(r || {})))];
   return (
@@ -63,6 +78,9 @@ function Table({ rows }: { rows: Record<string, unknown>[] }) {
   );
 }
 
+// The result in three groups: simple fields first (as a key/value table), then nested
+// objects (seller, buyer, address), then lists as tables. Field order is the API's, which
+// follows the document type's schema.
 function ResultView({ result }: { result: Record<string, unknown> }) {
   const scalars = Object.entries(result).filter(([, v]) => !Array.isArray(v) && (v === null || typeof v !== "object"));
   const objects = Object.entries(result).filter(([, v]) => v && typeof v === "object" && !Array.isArray(v));
@@ -101,6 +119,9 @@ export function JobDetail({ tracked, onDelete }: Props) {
   const { job, fileName, localError } = tracked;
   const u = job.usage;
 
+  // The summary boxes. "Verified by" says what independently confirmed the result: for a
+  // parser result the AI model that re-read it (or "checks only" when the client chose no AI);
+  // for an AI result the automatic checks it had to pass.
   const facts: [string, React.ReactNode][] = [
     ["Status", <StatusPill status={localError ? "failed" : job.status} />],
     ["Document type", job.document_type ? <>{humanize(job.document_type)}{job.document_type_source && <span className="muted"> ({job.document_type_source})</span>}</> : "—"],

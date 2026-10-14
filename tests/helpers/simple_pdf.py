@@ -12,6 +12,7 @@ from __future__ import annotations
 
 
 def _escape(text: str) -> str:
+    """Escape the characters PDF string literals treat specially: backslash and parentheses."""
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
@@ -20,6 +21,7 @@ def make_pdf(pages: list[list[tuple[float, float, str]]], font_size: int = 9) ->
     objects: list[bytes] = []
 
     def add(obj: bytes) -> int:
+        """Append one PDF object and return its object number (numbering starts at 1)."""
         objects.append(obj)
         return len(objects)          # PDF object numbers start at 1
 

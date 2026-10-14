@@ -17,6 +17,7 @@ from tests.helpers.simple_pdf import demo_statement, sample_transactions
 
 
 def _parsed(n: int = 8, rows_per_page: int = 25):
+    """A synthetic statement parsed by the DEMO BANK parser, plus its page texts."""
     rows = sample_transactions(n)
     rows[1]["description"] = "NEFT/ACME PAYROLL SEP"            # spaces inside a description
     pdf = demo_statement(rows, rows_per_page=rows_per_page)
@@ -32,6 +33,7 @@ def test_correct_statement_reconciles_fully(n, per_page):
 
 
 def _change_row(statement, index: int, **changes):
+    """A copy of the statement with row `index` changed (to simulate an extraction mistake)."""
     rows = list(statement.transactions)
     rows[index] = rows[index].model_copy(update=changes)
     return statement.model_copy(update={"transactions": rows})

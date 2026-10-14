@@ -36,4 +36,5 @@ REGISTRY: dict[str, DocType] = {
 
 
 def get_doc_type(name: str) -> DocType:
+    """The DocType for a type name (KeyError for an unknown name)."""
     return REGISTRY[name]

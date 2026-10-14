@@ -20,6 +20,9 @@ _audit = logging.getLogger("audit")
 
 def audit(*, tenant_id: str | None, key_id: str | None, action: str, resource_id: str | None,
           result: str, source_ip: str | None = None) -> None:
+    """Write one audit record (JSON, logger "audit"): who, what, which resource, outcome, source IP.
+    Ids and codes only, never request content.
+    """
     _audit.info(json.dumps({
         "type": "audit",
         "ts": now_iso(),

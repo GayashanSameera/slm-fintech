@@ -12,6 +12,9 @@ interface Props {
   onCancel?: () => void;
 }
 
+// Shown on first visit, when the key is rejected, and from the header's "API key" button.
+// The API URL normally comes from config.json and is shown read-only ("locked"); only a
+// build without config.json (local development) lets the user type it.
 export function KeyDialog({ initial, lockedUrl, error, onSave, onCancel }: Props) {
   const [apiUrl, setApiUrl] = useState(initial.apiUrl);
   const [apiKey, setApiKey] = useState(initial.apiKey);
@@ -28,6 +31,8 @@ export function KeyDialog({ initial, lockedUrl, error, onSave, onCancel }: Props
           Paste the API key you received. It stays in this browser tab only and is sent only to the
           extraction API. Closing the tab forgets it.
         </p>
+        {/* type=password + autoComplete=off: the key isn't shown on screen or saved by the
+            browser's password manager; spellCheck=off: it isn't sent to a spell-check service. */}
         <label className="field">
           API key
           <input type="password" autoComplete="off" spellCheck={false} placeholder="slm_live_..." value={apiKey}
@@ -42,6 +47,7 @@ export function KeyDialog({ initial, lockedUrl, error, onSave, onCancel }: Props
         ) : (
           <button type="button" className="link" onClick={() => setAdvanced(true)}>Show API URL</button>
         )}
+        {/* Why the last attempt failed, e.g. "API key not accepted". */}
         {error && <div className="notice bad">{error}</div>}
         <div className="row end">
           {onCancel && <button type="button" onClick={onCancel}>Cancel</button>}

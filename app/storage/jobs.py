@@ -51,6 +51,7 @@ def _expired(item: dict) -> bool:
 
 class JobRepo:
     def __init__(self, tenant_id: str):
+        """All job reads and writes for ONE tenant, through that tenant's scoped DynamoDB session."""
         self.tenant_id = tenant_id
         self.table = dynamodb_table(tenant_session(tenant_id))
         self.pk = keys.tenant_pk(tenant_id)
@@ -199,6 +200,7 @@ class JobRepo:
     # --- corrections (FR-2.12) ------------------------------------------------------
 
     def add_corrections(self, job_id: str, corr_id: str, corrections: list[dict], expires_at: int) -> None:
+        """Store one batch of corrections for a job; they expire together with the job."""
         self.table.put_item(Item=to_ddb({
             "PK": self.pk,
             "SK": keys.correction_sk(job_id, corr_id),
@@ -216,6 +218,9 @@ class JobRepo:
         return item["job_id"] if item and not _expired(item) else None
 
     def save_dedup(self, doc_type: str | None, sha256: str, job_id: str, expires_at: int) -> None:
+        """Remember which job processed this exact file (SHA-256) for this tenant and type, until the
+        job expires, so an identical upload is answered with that job (FR-2.11).
+        """
         self.table.put_item(Item={
             "PK": self.pk, "SK": keys.dedup_sk(doc_type, sha256),
             "job_id": job_id, "expires_at": expires_at,

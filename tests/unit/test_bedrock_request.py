@@ -17,6 +17,7 @@ PAGES = [{"text": "TAX INVOICE", "image": b"\xff\xd8jpeg"}]
 
 
 def _req(model: str, thinking: bool = False) -> dict:
+    """The Converse request the gateway would send for `model`."""
     return build_request(model_id=model, system="rules", pages=PAGES, instruction="Extract.",
                          thinking=thinking, max_tokens=1000)
 

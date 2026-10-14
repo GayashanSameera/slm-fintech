@@ -36,6 +36,7 @@ def detect_type(data: bytes) -> str:
 
 
 def content_type_for(kind: str) -> str:
+    """The Content-Type to store a file with in S3, from its DETECTED kind (never the client's claim)."""
     return {
         "pdf": "application/pdf",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -39,6 +39,7 @@ def check_zip(data: bytes) -> None:
 
 
 def docx_to_text(data: bytes) -> str:
+    """A DOCX as plain text: paragraphs first, then each table as ' | '-separated rows."""
     check_zip(data)
     try:
         document = docx.Document(io.BytesIO(data))

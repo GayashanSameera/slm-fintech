@@ -26,6 +26,7 @@ PRICES: dict[str, tuple[float, float, float]] = {
 
 
 def estimate_cost(call: GatewayResult) -> float:
+    """Estimated USD for one model call at the list prices in PRICES (0 for local/fake models)."""
     for prefix, (pin, pout, pcache) in PRICES.items():
         if call.model_id.startswith(prefix):
             return (call.input_tokens * pin + call.output_tokens * pout + call.cache_read_tokens * pcache) / 1e6

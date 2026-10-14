@@ -16,4 +16,7 @@ from pydantic import BaseModel
 
 def to_result(parsed: BaseModel) -> dict:
     # mode="json" applies our serializers (dates -> ISO strings).
+    """The validated model as plain JSON: every field present (null when missing), dates as
+    YYYY-MM-DD, amounts as 2-decimal strings.
+    """
     return parsed.model_dump(mode="json")

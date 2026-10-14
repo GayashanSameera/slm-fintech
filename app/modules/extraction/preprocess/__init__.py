@@ -28,6 +28,7 @@ class Prepared:
 
     @property
     def page_count(self) -> int:
+        """Number of pages prepared (PDF pages, ~3,000-character DOCX chunks, or 1 for an image)."""
         return len(self.pages)
 
     @property

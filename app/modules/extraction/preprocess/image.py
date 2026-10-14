@@ -29,6 +29,7 @@ def to_jpeg(img: Image.Image, quality: int = 85) -> bytes:
 
 
 def downscale(img: Image.Image, max_edge: int) -> Image.Image:
+    """A copy no larger than `max_edge` pixels on its long side (aspect kept, never enlarged)."""
     img = img.copy()
     img.thumbnail((max_edge, max_edge))   # keeps the aspect ratio; never enlarges
     return img

@@ -33,6 +33,9 @@ Rules:
 
 
 def system_prompt(doc_type: DocType) -> str:
+    """The fixed instructions for one document type: shared rules + that type's JSON schema.
+    Identical for every call of the type, so Bedrock can cache it (cache reads cost ~10%).
+    """
     schema = json.dumps(doc_type.model.model_json_schema(), separators=(",", ":"), sort_keys=True)
     return f"{_RULES}\nDocument type: {doc_type.name}\nJSON schema:\n{schema}\n"
 

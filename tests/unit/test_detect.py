@@ -22,12 +22,14 @@ from tests.helpers.simple_pdf import make_pdf
 
 
 def _image_bytes(fmt: str) -> bytes:
+    """A small white image encoded as `fmt` ("PNG" or "JPEG")."""
     buf = io.BytesIO()
     Image.new("RGB", (40, 30), "white").save(buf, format=fmt)
     return buf.getvalue()
 
 
 def _docx_bytes() -> bytes:
+    """A minimal real DOCX file with one paragraph."""
     buf = io.BytesIO()
     doc = Document()
     doc.add_paragraph("Synthetic payslip for tests")

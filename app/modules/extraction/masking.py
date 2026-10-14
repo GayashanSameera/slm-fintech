@@ -53,6 +53,7 @@ def mask_last4(value: str) -> str:
 
 
 def has_aadhaar_markers(*texts: str | None) -> bool:
+    """True if any of the texts mentions Aadhaar (aadhaar, aadhar, आधार, UIDAI, VID)."""
     return any(t and AADHAAR_MARKERS.search(t) for t in texts)
 
 
@@ -60,6 +61,7 @@ def mask(result: dict, *, strict_aadhaar: bool, unmasked_kinds: set[str]) -> dic
     """Return a masked COPY of `result` (a plain dict from model_dump)."""
 
     def walk(value: Any, field: str | None) -> Any:
+        """Recursively mask one value; `field` is the name of the field it belongs to."""
         if isinstance(value, dict):
             return {k: walk(v, k) for k, v in value.items()}
         if isinstance(value, list):

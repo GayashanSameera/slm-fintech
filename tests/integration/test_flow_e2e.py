@@ -37,12 +37,14 @@ GOOD_INVOICE = json.dumps({
 # --- helpers ---------------------------------------------------------------------------------
 
 def _png() -> bytes:
+    """A small synthetic PNG (a blank page) for the AI path."""
     buf = io.BytesIO()
     Image.new("RGB", (200, 100), "white").save(buf, format="PNG")
     return buf.getvalue()
 
 
 def _auth(api_key: str) -> dict:
+    """The Authorization header for an API key."""
     return {"Authorization": f"Bearer {api_key}"}
 
 
@@ -74,6 +76,7 @@ def _run_worker(queue_name: str) -> list[dict]:
 
 @pytest.fixture
 def client(aws):
+    """FastAPI's test client for the real app, on in-memory AWS."""
     from app.main import app
     return TestClient(app)
 
@@ -218,10 +221,12 @@ def _presigned_upload(client, tenant_id, api_key, data: bytes, doc_type: str | N
 
 
 def _eventbridge_object_created(key: str) -> dict:
+    """The EventBridge event S3 sends when an upload arrives."""
     return {"detail-type": "Object Created", "source": "aws.s3", "detail": {"object": {"key": key}}}
 
 
 def _eventbridge_scan_result(key: str, status: str) -> dict:
+    """The EventBridge event GuardDuty sends with its scan verdict."""
     return {"detail-type": "GuardDuty Malware Protection Object Scan Result", "source": "aws.guardduty",
             "detail": {"s3ObjectDetails": {"objectKey": key}, "scanResultDetails": {"scanResultStatus": status}}}
 

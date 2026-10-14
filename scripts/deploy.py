@@ -43,6 +43,7 @@ INLINE_LIMIT = 51_200        # CloudFormation's limit for a template sent inline
 
 
 def lint(template: Path) -> None:
+    """Run cfn-lint on a template (via uvx if not installed); stop the deployment on any problem."""
     exe = shutil.which("cfn-lint") or (shutil.which("uvx") and "uvx")
     if not exe:
         print("  (cfn-lint not available: skipping lint)")
@@ -57,6 +58,7 @@ def lint(template: Path) -> None:
 
 
 def exports(cfn) -> dict:
+    """Every CloudFormation export of the account and region, as {name: value}."""
     out, token = {}, None
     while True:
         resp = cfn.list_exports(**({"NextToken": token} if token else {}))
@@ -67,6 +69,7 @@ def exports(cfn) -> dict:
 
 
 def stack_status(cfn, name: str) -> str | None:
+    """A stack's status, e.g. "UPDATE_COMPLETE", or None if it doesn't exist."""
     try:
         return cfn.describe_stacks(StackName=name)["Stacks"][0]["StackStatus"]
     except cfn.exceptions.ClientError:
@@ -74,12 +77,14 @@ def stack_status(cfn, name: str) -> str | None:
 
 
 def print_failures(cfn, name: str) -> None:
+    """Print the last failed resources of a stack: the first one is usually the real cause."""
     events = cfn.describe_stack_events(StackName=name)["StackEvents"]
     for e in reversed([e for e in events if e["ResourceStatus"].endswith("FAILED")][-8:]):
         print(f"  ✗ {e['LogicalResourceId']} ({e['ResourceType']}): {e.get('ResourceStatusReason', '')}")
 
 
 def deploy_stack(sess, env: str, stack: str, assume_yes: bool) -> bool:
+    """Deploy one stack through a change set (see the module docstring). True on success."""
     cfn, s3 = sess.client("cloudformation"), sess.client("s3")
     name = f"slm-{env}-{stack}"
     template = TEMPLATES / f"{stack}.yaml"
@@ -167,6 +172,7 @@ def deploy_stack(sess, env: str, stack: str, assume_yes: bool) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Deploy the requested stacks in dependency order; stop at the first failure."""
     p = argparse.ArgumentParser(description="Deploy SLM Fintech stacks through reviewed change sets.")
     p.add_argument("env", choices=["dev", "prod"])
     p.add_argument("stacks", nargs="+", choices=list(ORDER) + ["all"])

@@ -42,6 +42,7 @@ PAGES = [{"text": "TAX INVOICE ...", "image": None, "scanned": False}]
 
 
 def _models(gw: FakeGateway) -> list[tuple[str, bool]]:
+    """(model id, thinking) of every call the fake model received, in order."""
     return [(c["model_id"], c["thinking"]) for c in gw.calls]
 
 
@@ -115,6 +116,7 @@ def test_schema_errors_name_fields_not_values():
 # --- the whole document (AI path) -------------------------------------------------------------
 
 def _extract(gw: FakeGateway, requested_type: str | None, tenant: TenantSettings | None = None):
+    """Run extract_document on a one-page image document for a test tenant."""
     prepared = Prepared(kind="png", pages=[{"text": None, "image": b"img", "scanned": True}])
     return extract_document(data=b"", prepared=prepared, requested_type=requested_type,
                             tenant=tenant or TenantSettings(tenant_id="t_test"),

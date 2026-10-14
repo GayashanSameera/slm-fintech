@@ -648,7 +648,9 @@ These steps are run by the team operating the platform, not by the client.
        [--webhook-url https://client.example.com/slm-events] [--retention-days 30] \
        [--verification-mode ai|checks_only] [--unmasked pan account] [--read-only]
    ```
-   - The API key (and the webhook secret, if you passed a webhook URL) is printed **once**. Pass it to the client over a secure channel. `--key-file <path>` writes it to a private file instead of printing it.
+   - The API key (and the webhook secret, if you passed a webhook URL) is printed **once**. Pass it to the client over a secure channel.
+   - `--secret-name slm/prod/api-keys/<client>` stores the key in **AWS Secrets Manager** instead of printing it. Use this when the client's application runs in this AWS account: it reads the key at run time with `secretsmanager:GetSecretValue`. `--key-file <path>` writes it to a private file instead.
+   - Never confuse it with `slm/prod/api-key-pepper`: that secret is the platform's internal hashing pepper, **not** an API key, and must never be changed.
    - Running the command again with the same name creates nothing.
 2. **Send the client this guide and the console URL** (https://dcw2i73df06ry.cloudfront.net). The console is a browser app for testing: the client signs in with their own API key, which stays in their browser tab.
 3. **Rotate or revoke keys** when a client asks, a key may have leaked, or someone with access leaves:

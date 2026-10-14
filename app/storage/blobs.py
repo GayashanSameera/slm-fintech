@@ -25,6 +25,7 @@ from app.storage.aws import s3_client, tenant_session
 
 class Blobs:
     def __init__(self, tenant_id: str):
+        """S3 access for ONE tenant, through that tenant's scoped credentials (tenant_session)."""
         self.tenant_id = tenant_id
         self.s3 = s3_client(tenant_session(tenant_id))
 
@@ -41,19 +42,23 @@ class Blobs:
 
     def _check(self, key: str) -> None:
         # Defence in depth: never touch a key outside this tenant's prefix, even locally.
+        """Refuse any key outside this tenant's prefix, in code, before S3 (and IAM) would refuse it too."""
         if not key.startswith(keys.tenant_prefix(self.tenant_id)):
             raise PermissionError("key outside tenant prefix")
 
     def put(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        """Store an object under the tenant's prefix, KMS-encrypted with the documents key (in AWS)."""
         self._check(key)
         self.s3.put_object(Bucket=settings.bucket, Key=key, Body=data, ContentType=content_type,
                            **self._sse_args())
 
     def get(self, key: str) -> bytes:
+        """Read an object's bytes (S3 decrypts it with the documents key on the way out)."""
         self._check(key)
         return self.s3.get_object(Bucket=settings.bucket, Key=key)["Body"].read()
 
     def exists(self, key: str) -> bool:
+        """True if the object exists. Only "not found" means False; any other error is raised."""
         self._check(key)
         try:
             self.s3.head_object(Bucket=settings.bucket, Key=key)
@@ -70,6 +75,7 @@ class Blobs:
         return {t["Key"]: t["Value"] for t in resp.get("TagSet", [])}
 
     def delete(self, key: str) -> None:
+        """Delete one object. Deleting a key that doesn't exist is not an error in S3."""
         self._check(key)
         self.s3.delete_object(Bucket=settings.bucket, Key=key)
 
@@ -86,6 +92,7 @@ class Blobs:
         return deleted
 
     def copy(self, src_key: str, dst_key: str) -> None:
+        """Copy an object within the tenant's prefix (used for consented training copies), re-encrypted."""
         self._check(src_key)
         self._check(dst_key)
         self.s3.copy_object(Bucket=settings.bucket, Key=dst_key,

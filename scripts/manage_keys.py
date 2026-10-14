@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one key operation (list, create or revoke) for one tenant. Returns the exit code."""
     p = argparse.ArgumentParser(description="List, create and revoke a tenant's API keys.")
     p.add_argument("command", choices=["list", "create", "revoke"])
     p.add_argument("--env", required=True, choices=["local", "dev", "prod"])
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--key-id", help="For revoke: the key id shown by `list`")
     p.add_argument("--read-only", action="store_true", help="For create: extractions:read only")
     p.add_argument("--key-file", help="For create: write the key to this file instead of printing it")
+    p.add_argument("--secret-name", help="For create: store the key in Secrets Manager under this name (updates it if it exists)")
     args = p.parse_args(argv)
     if args.profile:
         os.environ["AWS_PROFILE"] = args.profile
@@ -56,7 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "create":
         scopes = ["extractions:read"] if args.read_only else ["extractions:read", "extractions:write"]
         key = create_api_key(tenant_id, scopes, live=args.env == "prod")
-        if args.key_file:
+        if args.secret_name:
+            arn = onboarding.store_key_in_secrets_manager(args.env, args.secret_name, key, args.tenant)
+            print(f"New key stored in Secrets Manager (not printed): {arn}")
+        elif args.key_file:
             path = Path(args.key_file).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(key + "\n")

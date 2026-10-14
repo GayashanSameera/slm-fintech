@@ -27,6 +27,9 @@ log = get_logger(__name__)
 def _policy(principal_id: str, effect: str, method_arn: str, context: dict | None = None) -> dict:
     # Allow the whole API (all methods/paths of this stage) so the cached answer
     # works for every route; per-route scope checks happen in the API Lambda.
+    """The authorizer's answer: an IAM policy (Allow/Deny) for the WHOLE stage, so API Gateway's
+    60-second cache serves every route, plus the context passed on to the api function.
+    """
     arn_parts = method_arn.split("/")
     api_wildcard = "/".join(arn_parts[:2]) + "/*"     # arn:...:apiId/stage/*
     doc = {
@@ -42,6 +45,9 @@ def _policy(principal_id: str, effect: str, method_arn: str, context: dict | Non
 
 
 def handler(event: dict, context=None) -> dict:
+    """Lambda entry point (API Gateway REQUEST authorizer): API key -> Allow with the tenant in the
+    context; bad key -> 401; suspended tenant -> explicit Deny (403).
+    """
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     try:
         principal = resolve_api_key(parse_bearer(headers.get("authorization")))

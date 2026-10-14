@@ -26,6 +26,7 @@ NOVA, HAIKU, SONNET = (r.model for r in PROFILE.ladder)
 
 
 def _run(pdf: bytes, gw: FakeGateway, *, requested_type: str | None = None, **tenant_settings):
+    """Run the full extract_document on `pdf` for a test tenant, with the given tenant settings."""
     tenant = TenantSettings(tenant_id="t_test", **tenant_settings)
     return extract_document(data=pdf, prepared=preprocess(pdf), requested_type=requested_type,
                             tenant=tenant, profile=PROFILE, gateway=gw, job_id="j_test")
@@ -115,6 +116,7 @@ def test_requested_other_type_skips_rung0():
 # reported identical values and ran out of tokens on two-page statements.
 
 def _statement(n: int = 6):
+    """A synthetic statement: (rows, prepared pages, parser result)."""
     from app.modules.extraction.parsers.fingerprint import pick_parser
     from app.modules.extraction.schemas.bank_statement import BankStatement
 
@@ -125,6 +127,7 @@ def _statement(n: int = 6):
 
 
 def _verify(answer: str, statement=None, n: int = 6):
+    """Run the verifier with a queued model answer. Returns (result, gateway, rows, parsed)."""
     from app.modules.extraction.parsers.verify import verify
 
     rows, prepared, parsed = _statement(n)

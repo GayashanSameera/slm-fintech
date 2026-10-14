@@ -166,6 +166,13 @@ def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: Mode
 
 def extract_document(*, data: bytes, prepared, requested_type: str | None, tenant, profile: Profile,
                      gateway: ModelGateway, job_id: str) -> ExtractionOutcome:
+    """Turn one prepared document into a validated, normalised, MASKED result.
+
+    Order: Rung 0 (known bank layouts: parser + checks + reconciliation + AI check) ->
+    document type (given, parser, or classify) -> AI ladder (cheapest model first, climbing on
+    failed checks) -> nulls for missing fields -> masking. Returns an ExtractionOutcome with every
+    model call made, so usage can be metered and returned. Never touches storage.
+    """
     calls: list[GatewayResult] = []
     page_texts = [p.get("text") or "" for p in prepared.pages]
 

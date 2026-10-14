@@ -12,14 +12,17 @@ from datetime import UTC, datetime, timedelta
 
 
 def now() -> datetime:
+    """The current time in UTC (timezone-aware)."""
     return datetime.now(UTC)
 
 
 def iso(dt: datetime) -> str:
+    """A datetime as "2026-10-14T10:15:09Z" (UTC, whole seconds): the API's time format."""
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def now_iso() -> str:
+    """The current UTC time in the API's time format."""
     return iso(now())
 
 
@@ -34,4 +37,5 @@ def epoch_in(seconds: int) -> int:
 
 
 def epoch_now() -> int:
+    """The current time in whole epoch seconds (DynamoDB TTL and deadlines use these)."""
     return int(now().timestamp())
