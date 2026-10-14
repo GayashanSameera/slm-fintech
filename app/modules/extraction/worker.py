@@ -18,6 +18,8 @@ What happens for one job (architecture §4.5, stages 6-12):
 Errors:
     JobError        bad document -> job "failed" with a code, message deleted (no retry)
     TemporaryError  e.g. Bedrock throttling -> lease released, SQS retries the message
+    ScanPending     direct flow, GuardDuty tag not there yet -> retried; after the last
+                    attempt the job fails with "scan_timeout"
     anything else   treated like temporary; after 3 attempts the job is marked failed
                     ("processing_error") and SQS moves the message to the DLQ (alarm).
 """
@@ -93,6 +95,10 @@ def process_job(tenant_id: str, job_id: str, receive_count: int = 1) -> None:
         log.info("job_skipped", tenant_id=tenant_id, job_id=job_id)   # finished, or another worker has it
         return
     job = repo.get(job_id, consistent=True)
+    if job is None:
+        # Retention ended while the job waited in the queue: the data must not be processed.
+        log.info("job_expired_before_processing", tenant_id=tenant_id, job_id=job_id)
+        return
     blobs = Blobs(tenant_id)
     source = keys.source_key(tenant_id, job_id)
     started = time.monotonic()
@@ -160,6 +166,20 @@ def process_job(tenant_id: str, job_id: str, receive_count: int = 1) -> None:
             usage.record(tenant_id, pages=0, calls=calls, method="failed")
         webhooks.enqueue(tenant_id, job_id, "failed")
         log.info("job_failed", tenant_id=tenant_id, job_id=job_id, error_code=e.code)
+
+    except ScanPending:
+        # Direct flow: GuardDuty hasn't tagged the file yet. Not an error in OUR code, so
+        # it gets its own outcome: retry later, and after the last attempt fail with the
+        # real reason ("scan_timeout"), the same code the scan-sweeper uses for presigned uploads.
+        if receive_count >= MAX_ATTEMPTS:
+            repo.fail(job_id, "scan_timeout")
+            blobs.delete(source)           # never processed, so never kept
+            webhooks.enqueue(tenant_id, job_id, "failed")
+            log.warning("job_scan_timeout", tenant_id=tenant_id, job_id=job_id, attempt=receive_count)
+        else:
+            repo.transition(job_id, ["processing"], "queued", remove=["lease_until"])
+            log.info("job_scan_pending", tenant_id=tenant_id, job_id=job_id, attempt=receive_count)
+        raise TemporaryError() from None
 
     except Exception as e:
         if receive_count >= MAX_ATTEMPTS:

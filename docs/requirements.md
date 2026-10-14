@@ -215,7 +215,7 @@ Legal counsel must confirm NFR-C1 to NFR-C5 before the pilot, including whether 
 
 | ID | Requirement |
 |---|---|
-| NFR-K1 | Monthly AWS cost at 1,000 pages per day stays at or below about USD 150. (Current estimate: ~USD 80; see [cost.md](cost.md).) |
+| NFR-K1 | Monthly AWS cost at 1,000 pages per day stays at or below about USD 150. (Current estimate: ~USD 56; see [cost.md](cost.md).) |
 | NFR-K2 | No component is billed by the hour. |
 | NFR-K3 | An AWS Budget alert fires at 80% and 100% of the monthly target. |
 | NFR-K4 | Each document is processed by the cheapest method that meets the accuracy targets: Rung 0 parsers first, then the cheapest suitable AI model, then stronger models only when checks fail. |

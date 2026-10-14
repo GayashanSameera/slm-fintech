@@ -1,0 +1,956 @@
+# ==============================================================================
+# Stack 3 of 4: APP  (deploy after `data`, `security`, and after pushing the image)
+#
+# Everything that RUNS. All application code is AWS Lambda (NFR-O5): seven
+# functions, ONE container image, each function picking its entry point from
+# app/lambda_handlers.py through ImageConfig.Command.
+#
+#   Request path   WAF -> API Gateway (REST) -> authorizer Lambda -> api Lambda
+#   Upload path    S3 "Object Created" + GuardDuty scan result -> EventBridge -> intake Lambda
+#   Work path      SQS jobs-interactive / jobs-background -> worker Lambda -> Bedrock
+#   Notify path    SQS webhooks -> webhook Lambda -> tenant's https URL
+#   Housekeeping   DynamoDB stream (TTL deletes) -> retention-cleaner Lambda
+#                  EventBridge Scheduler every 5 min -> scan-sweeper Lambda
+#
+# Each function has its OWN IAM role named slm-<env>-fn-<name> with only what it
+# needs (security.md §6.3). Tenant data is never reached with these roles
+# directly: they may only assume the tenant-data role (security.yaml).
+#
+# Requires --capabilities CAPABILITY_NAMED_IAM (the roles have fixed names,
+# which the tenant-data trust policy relies on).
+# ==============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SLM Fintech - app stack (API Gateway, WAF, Lambdas, SQS, EventBridge, GuardDuty)
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+  ImageTag:
+    Type: String
+    Description: Tag of the image in the slm-<env> ECR repository (CI uses the git commit SHA).
+
+  # --- API timing ------------------------------------------------------------------
+  # API Gateway REST APIs stop waiting for the backend after 29 s by DEFAULT. The
+  # "wait up to 40 s for the result" design (architecture §5.2) needs a Service
+  # Quotas increase for "Maximum integration timeout in milliseconds". Until it is
+  # approved keep 29000 / 25; afterwards use 45000 / 40.
+  ApiIntegrationTimeoutMs:
+    Type: Number
+    Default: 29000
+    MinValue: 1000
+  MaxWaitSeconds:
+    Type: Number
+    Default: 25
+    Description: SLM_MAX_WAIT_SECONDS. Must stay a few seconds below the integration timeout.
+
+  # --- Throughput and protection ---------------------------------------------------
+  ApiThrottleRate:     { Type: Number, Default: 50,   Description: Steady requests per second for the whole API }
+  ApiThrottleBurst:    { Type: Number, Default: 100 }
+  WafRateLimitPerIp:   { Type: Number, Default: 1000, Description: Max requests per IP per 5 minutes before WAF blocks }
+  EnableWaf:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: AWS WAF costs ~USD 8/month fixed. Keep "true" in prod; "false" is fine for dev (only the team calls it).
+  InteractiveMaxConcurrency: { Type: Number, Default: 10, MinValue: 2, Description: Max parallel workers for waiting clients }
+  BackgroundMaxConcurrency:  { Type: Number, Default: 3,  MinValue: 2, Description: Max parallel workers for the backlog }
+  LogLevel:            { Type: String, Default: INFO, AllowedValues: [DEBUG, INFO, WARNING, ERROR] }
+
+  # --- Processing window (FR-5). "always" = process as soon as jobs arrive. ------------
+  ProcessingWindow:
+    Type: String
+    Default: always
+    Description: SLM_PROCESSING_WINDOW, e.g. "Mon-Fri 09:00-19:00 Asia/Kolkata". The three Window* values below MUST describe the same window.
+  WindowOpenCron:  { Type: String, Default: "cron(0 9 ? * MON-FRI *)" }
+  WindowCloseCron: { Type: String, Default: "cron(0 19 ? * MON-FRI *)" }
+  WindowTimezone:  { Type: String, Default: Asia/Kolkata }
+
+Conditions:
+  HasWindow: !Not [!Equals [!Ref ProcessingWindow, always]]
+  WafOn: !Equals [!Ref EnableWaf, "true"]
+
+Resources:
+  # ==============================================================================
+  # SQS queues (architecture §5, §6.6). Messages carry only {tenant_id, job_id}.
+  # Encrypted with the table KMS key; KmsDataKeyReusePeriodSeconds=3600 means SQS
+  # asks KMS for a new data key at most once an hour (keeps KMS cost near zero).
+  # ==============================================================================
+  JobsInteractiveDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-jobs-interactive-dlq
+      MessageRetentionPeriod: 1209600          # 14 days to investigate
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+
+  JobsInteractiveQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-jobs-interactive
+      VisibilityTimeout: 180                   # > worker timeout (120 s) and lease (150 s, worker.py)
+      MessageRetentionPeriod: 1209600          # jobs can wait out a closed processing window
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsInteractiveDlq.Arn
+        maxReceiveCount: 3                     # = MAX_ATTEMPTS in worker.py
+
+  JobsBackgroundDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-jobs-background-dlq
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+
+  JobsBackgroundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-jobs-background
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsBackgroundDlq.Arn
+        maxReceiveCount: 3
+
+  WebhooksDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-webhooks-dlq
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+
+  WebhooksQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub slm-${Env}-webhooks
+      VisibilityTimeout: 90                    # webhook Lambda timeout is 15 s; 90 s spaces out retries
+      KmsMasterKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-TableKeyArn" }
+      KmsDataKeyReusePeriodSeconds: 3600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WebhooksDlq.Arn
+        maxReceiveCount: 5                     # webhooks.py: 5 tries, then the DLQ
+
+  # ==============================================================================
+  # Log groups: created HERE, before the functions, so CloudFormation owns them
+  # (if Lambda created them first, we couldn't set KMS and retention).
+  # Application logs: 30 days. The api group: 180 days, because it carries the
+  # audit records (app/audit.py, NFR-C4). Logs never contain document content
+  # (app/core/logging.py allowlist), but are still KMS-encrypted.
+  # ==============================================================================
+  AuthorizerLogs:       { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-authorizer",        RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  ApiLogs:              { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-api",               RetentionInDays: 180, KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  WorkerLogs:           { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-worker",            RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  IntakeLogs:           { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-intake",            RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  WebhookLogs:          { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-webhook",           RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  RetentionCleanerLogs: { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-retention-cleaner", RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  ScanSweeperLogs:      { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/lambda/slm-${Env}-scan-sweeper",      RetentionInDays: 30,  KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+  ApiAccessLogs:        { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: !Sub "/aws/apigateway/slm-${Env}-access",       RetentionInDays: 180, KmsKeyId: { "Fn::ImportValue": !Sub "slm-${Env}-LogsKeyArn" } } }
+
+  # ==============================================================================
+  # IAM execution roles, one per function (security.md §6.3).
+  # Every role may: write to its own log group, and (except the authorizer)
+  # assume tenant-data with a tenant tag. Everything else is listed per role.
+  # ==============================================================================
+  AuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-authorizer
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: authorizer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt AuthorizerLogs.Arn }
+              # Read-only lookups: the API-key item ("APIKEY#<hash>") and the tenant's
+              # PROFILE (status: active/suspended). The authorizer runs BEFORE we know
+              # the tenant, so it can't use a tenant session (app/auth/principal.py).
+              - Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TableArn" }
+                Condition:
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys: ["APIKEY#*", "TENANT#*"]
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: { "Fn::ImportValue": !Sub "slm-${Env}-ApiKeyPepperArn" }
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-api
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt ApiLogs.Arn }
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              # Queue new jobs (service.create_direct) on either job queue.
+              - Effect: Allow
+                Action: [sqs:SendMessage, sqs:GetQueueUrl]
+                Resource: [!GetAtt JobsInteractiveQueue.Arn, !GetAtt JobsBackgroundQueue.Arn]
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-worker
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: worker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt WorkerLogs.Arn }
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              # Lambda's SQS trigger polls with the function's role.
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes, sqs:ChangeMessageVisibility]
+                Resource: [!GetAtt JobsInteractiveQueue.Arn, !GetAtt JobsBackgroundQueue.Arn]
+              - { Effect: Allow, Action: [sqs:SendMessage, sqs:GetQueueUrl], Resource: !GetAtt WebhooksQueue.Arn }
+              # Bedrock model allowlist (security.md §5.2, architecture §3.5):
+              # 1) only the three US inference profiles of the model ladder...
+              - Sid: InvokeApprovedUsProfiles
+                Effect: Allow
+                Action: bedrock:InvokeModel          # covers the Converse API too
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-lite-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-5-5*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-5-5*"
+              # 2) ...and the underlying models in the 3 US regions, but ONLY when the
+              #    call comes through a "us." profile. Direct or "global." calls fail.
+              - Sid: UnderlyingModelsOnlyViaUsProfile
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0
+                  - arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-lite-v1:0
+                  - arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0
+                  - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-5-5*
+                  - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-5-5*
+                  - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-5-5*
+                  - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5*
+                  - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5*
+                  - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5*
+                Condition:
+                  StringLike:
+                    bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.*"
+
+  IntakeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-intake
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: intake
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt IntakeLogs.Arn }
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              # Clean upload -> queue the job; malware/scan failure -> queue a "failed" webhook.
+              - Effect: Allow
+                Action: [sqs:SendMessage, sqs:GetQueueUrl]
+                Resource: [!GetAtt JobsInteractiveQueue.Arn, !GetAtt WebhooksQueue.Arn]
+
+  ScanSweeperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-scan-sweeper
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: scan-sweeper
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt ScanSweeperLogs.Arn }
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              # Cross-tenant, but ONLY the sparse "pending" index (ids + statuses of
+              # waiting jobs). Status changes then go through a tenant session.
+              - Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub
+                  - "${TableArn}/index/pending"
+                  - TableArn: { "Fn::ImportValue": !Sub "slm-${Env}-TableArn" }
+              - { Effect: Allow, Action: [sqs:SendMessage, sqs:GetQueueUrl], Resource: !GetAtt WebhooksQueue.Arn }
+
+  WebhookRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-webhook
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: webhook
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt WebhookLogs.Arn }
+              # Reads the tenant's PROFILE (webhook URL + secret id) through a tenant session.
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes, sqs:ChangeMessageVisibility]
+                Resource: !GetAtt WebhooksQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:slm/${Env}/webhook/*"
+
+  RetentionCleanerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-fn-retention-cleaner
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: retention-cleaner
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt RetentionCleanerLogs.Arn }
+              # Deletes the expired job's S3 prefix through a tenant session (Blobs.delete_prefix).
+              - { Effect: Allow, Action: [sts:AssumeRole, sts:TagSession], Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" } }
+              # Lambda's DynamoDB-stream trigger reads the stream with the function's role.
+              - Effect: Allow
+                Action: [dynamodb:DescribeStream, dynamodb:GetRecords, dynamodb:GetShardIterator, dynamodb:ListStreams]
+                Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TableStreamArn" }
+
+  # ==============================================================================
+  # Lambda functions. Same image, different ImageConfig.Command.
+  # arm64 = Graviton (cheaper). No VPC (architecture §8.5).
+  #
+  # Environment: every SLM_* variable is read by app/config.py. CloudFormation
+  # YAML has no anchors/aliases, so the shared block is repeated per function;
+  # keep the copies in sync. No secrets here: only the secret's ARN (NFR-S9).
+  # ==============================================================================
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-authorizer
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.authorizer] }
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 5
+      Role: !GetAtt AuthorizerRole.Arn
+      LoggingConfig: { LogGroup: !Ref AuthorizerLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_PEPPER_SECRET_ID: { "Fn::ImportValue": !Sub "slm-${Env}-ApiKeyPepperArn" }
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-api
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.api] }
+      Architectures: [arm64]
+      MemorySize: 1024
+      Timeout: 45                               # > the longest wait (40 s) plus overhead
+      Role: !GetAtt ApiRole.Arn
+      LoggingConfig: { LogGroup: !Ref ApiLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # Runs one extraction per SQS message: preprocess, Rung 0 or AI ladder, checks, mask, store.
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-worker
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.worker] }
+      Architectures: [arm64]
+      MemorySize: 2048
+      Timeout: 120
+      Role: !GetAtt WorkerRole.Arn
+      LoggingConfig: { LogGroup: !Ref WorkerLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # EventBridge: upload arrived -> scanning; scan clean -> queued; malware -> failed.
+  IntakeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-intake
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.intake] }
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt IntakeRole.Arn
+      LoggingConfig: { LogGroup: !Ref IntakeLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # Signs and POSTs job-finished events to the tenant's https URL (no document data).
+  WebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-webhook
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.webhook] }
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 15
+      Role: !GetAtt WebhookRole.Arn
+      LoggingConfig: { LogGroup: !Ref WebhookLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # DynamoDB TTL deleted a job -> delete its S3 prefix (NFR-C5).
+  RetentionCleanerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-retention-cleaner
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.retention_cleaner] }
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 30
+      Role: !GetAtt RetentionCleanerRole.Arn
+      LoggingConfig: { LogGroup: !Ref RetentionCleanerLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # Every 5 minutes: expire never-uploaded jobs, fail jobs whose scan never finished.
+  ScanSweeperFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub slm-${Env}-scan-sweeper
+      PackageType: Image
+      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
+      ImageConfig: { Command: [app.lambda_handlers.scan_sweeper] }
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt ScanSweeperRole.Arn
+      LoggingConfig: { LogGroup: !Ref ScanSweeperLogs }
+      Environment:
+        Variables:
+          SLM_ENV: !Ref Env
+          SLM_REGION: !Ref AWS::Region
+          SLM_LOG_LEVEL: !Ref LogLevel
+          SLM_TABLE: { "Fn::ImportValue": !Sub "slm-${Env}-TableName" }
+          SLM_BUCKET: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          SLM_QUEUE_INTERACTIVE: !GetAtt JobsInteractiveQueue.QueueName
+          SLM_QUEUE_BACKGROUND: !GetAtt JobsBackgroundQueue.QueueName
+          SLM_QUEUE_WEBHOOKS: !GetAtt WebhooksQueue.QueueName
+          SLM_TENANT_DATA_ROLE_ARN: { "Fn::ImportValue": !Sub "slm-${Env}-TenantDataRoleArn" }
+          SLM_KMS_DOCUMENTS_KEY_ID: { "Fn::ImportValue": !Sub "slm-${Env}-DocumentsKeyArn" }
+          SLM_MODEL_PROVIDER: bedrock
+          SLM_PROCESSING_WINDOW: !Ref ProcessingWindow
+          SLM_MAX_WAIT_SECONDS: !Ref MaxWaitSeconds
+
+  # ==============================================================================
+  # Triggers
+  # ==============================================================================
+  # Worker <- both job queues. BatchSize 1 = one job per invocation, so one slow
+  # document never holds others back. ReportBatchItemFailures matches the
+  # {"batchItemFailures": [...]} that worker.handle_sqs_event returns.
+  # MaximumConcurrency caps parallel workers PER QUEUE: the backlog can never use
+  # the capacity reserved for clients who are waiting (FR-2.17), and Bedrock
+  # quotas aren't flooded.
+  WorkerInteractiveTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref WorkerFunction
+      EventSourceArn: !GetAtt JobsInteractiveQueue.Arn
+      BatchSize: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig: { MaximumConcurrency: !Ref InteractiveMaxConcurrency }
+
+  WorkerBackgroundTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref WorkerFunction
+      EventSourceArn: !GetAtt JobsBackgroundQueue.Arn
+      BatchSize: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig: { MaximumConcurrency: !Ref BackgroundMaxConcurrency }
+
+  WebhookTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      EventSourceArn: !GetAtt WebhooksQueue.Arn
+      BatchSize: 10
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig: { MaximumConcurrency: 2 }
+
+  # Retention cleaner <- DynamoDB stream, filtered so it ONLY sees deletions made
+  # by TTL (principal dynamodb.amazonaws.com). Deletes made by the API don't
+  # invoke it at all (the API deletes the S3 files itself).
+  RetentionCleanerTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref RetentionCleanerFunction
+      EventSourceArn: { "Fn::ImportValue": !Sub "slm-${Env}-TableStreamArn" }
+      StartingPosition: LATEST
+      BatchSize: 100
+      MaximumRetryAttempts: 5                  # never block the stream forever; S3 lifecycle is the backstop
+      BisectBatchOnFunctionError: true
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"eventName": ["REMOVE"], "userIdentity": {"type": ["Service"], "principalId": ["dynamodb.amazonaws.com"]}}'
+
+  # Intake <- EventBridge (architecture §5.1).
+  # 1) S3 "Object Created" for anything under tenants/ (intake ignores keys that
+  #    aren't job sources, e.g. result.json).
+  UploadCreatedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub slm-${Env}-upload-created
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [Object Created]
+        detail:
+          bucket: { name: [{ "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }] }
+          object: { key: [{ prefix: tenants/ }] }
+      Targets:
+        - Id: intake
+          Arn: !GetAtt IntakeFunction.Arn
+          RetryPolicy: { MaximumRetryAttempts: 20, MaximumEventAgeInSeconds: 3600 }
+
+  # 2) GuardDuty's verdict for a scanned object.
+  ScanResultRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub slm-${Env}-scan-result
+      EventPattern:
+        source: [aws.guardduty]
+        detail-type: [GuardDuty Malware Protection Object Scan Result]
+        detail:
+          s3ObjectDetails: { bucketName: [{ "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }] }
+      Targets:
+        - Id: intake
+          Arn: !GetAtt IntakeFunction.Arn
+          RetryPolicy: { MaximumRetryAttempts: 20, MaximumEventAgeInSeconds: 3600 }
+
+  IntakeFromUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IntakeFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt UploadCreatedRule.Arn
+
+  IntakeFromScanPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IntakeFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScanResultRule.Arn
+
+  # GuardDuty Malware Protection for S3 (NFR-S6, architecture §5.4): scans every
+  # new object under tenants/ and writes the verdict as the object tag
+  # GuardDutyMalwareScanStatus (the direct flow's worker reads that tag).
+  MalwareProtectionPlan:
+    Type: AWS::GuardDuty::MalwareProtectionPlan
+    Properties:
+      Role: { "Fn::ImportValue": !Sub "slm-${Env}-MalwareScanRoleArn" }
+      ProtectedResource:
+        S3Bucket:
+          BucketName: { "Fn::ImportValue": !Sub "slm-${Env}-BucketName" }
+          ObjectPrefixes: [tenants/]
+      Actions:
+        Tagging: { Status: ENABLED }
+
+  # ==============================================================================
+  # EventBridge Scheduler
+  # ==============================================================================
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-scheduler
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: scheduler.amazonaws.com }, Action: sts:AssumeRole }] }
+      Policies:
+        - PolicyName: scheduler
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: lambda:InvokeFunction, Resource: !GetAtt ScanSweeperFunction.Arn }
+              # Only used with a processing window: switch the worker triggers on/off.
+              - Effect: Allow
+                Action: lambda:UpdateEventSourceMapping
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*"
+
+  ScanSweeperSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub slm-${Env}-scan-sweeper
+      ScheduleExpression: rate(5 minutes)
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt ScanSweeperFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+
+  # Processing window (FR-5), only created when ProcessingWindow != "always".
+  # At closing time the worker's SQS triggers are DISABLED; jobs wait in SQS.
+  # At opening time they are ENABLED again. Uses Scheduler's built-in AWS SDK
+  # target, so no extra Lambda is needed.
+  WindowCloseInteractive:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasWindow
+    Properties:
+      Name: !Sub slm-${Env}-window-close-interactive
+      ScheduleExpression: !Ref WindowCloseCron
+      ScheduleExpressionTimezone: !Ref WindowTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:lambda:updateEventSourceMapping
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"UUID": "${WorkerInteractiveTrigger}", "Enabled": false}'
+
+  WindowCloseBackground:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasWindow
+    Properties:
+      Name: !Sub slm-${Env}-window-close-background
+      ScheduleExpression: !Ref WindowCloseCron
+      ScheduleExpressionTimezone: !Ref WindowTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:lambda:updateEventSourceMapping
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"UUID": "${WorkerBackgroundTrigger}", "Enabled": false}'
+
+  WindowOpenInteractive:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasWindow
+    Properties:
+      Name: !Sub slm-${Env}-window-open-interactive
+      ScheduleExpression: !Ref WindowOpenCron
+      ScheduleExpressionTimezone: !Ref WindowTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:lambda:updateEventSourceMapping
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"UUID": "${WorkerInteractiveTrigger}", "Enabled": true}'
+
+  WindowOpenBackground:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasWindow
+    Properties:
+      Name: !Sub slm-${Env}-window-open-background
+      ScheduleExpression: !Ref WindowOpenCron
+      ScheduleExpressionTimezone: !Ref WindowTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:lambda:updateEventSourceMapping
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"UUID": "${WorkerBackgroundTrigger}", "Enabled": true}'
+
+  # ==============================================================================
+  # API Gateway REST API (architecture §5).
+  #
+  # FastAPI does ALL the routing, so API Gateway needs just one catch-all route:
+  #   ANY /v1/{proxy+}  -> authorizer -> api Lambda (proxy integration)
+  #   GET /healthz      -> api Lambda, no auth (load-balancer style health check)
+  #
+  # REDEPLOYING: API Gateway only serves what is in a Deployment. CloudFormation
+  # does not create a new Deployment when a Method changes. The routes here
+  # almost never change; if they do, rename the ApiDeployment logical id
+  # (e.g. ApiDeploymentV2) so a fresh deployment is made.
+  # ==============================================================================
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub slm-${Env}-api
+      EndpointConfiguration: { Types: [REGIONAL] }
+      DisableExecuteApiEndpoint: false          # set true once a custom domain is in front
+      # Multipart uploads (direct flow) are binary: without this API Gateway would
+      # corrupt them. Mangum decodes the base64 body that API Gateway then sends.
+      BinaryMediaTypes: [multipart/form-data]
+
+  # Lambda REQUEST authorizer: API key -> tenant. Answers are cached for 60 s per
+  # Authorization header, so a revoked key stops working within a minute.
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: tenant-api-key
+      RestApiId: !Ref Api
+      Type: REQUEST
+      IdentitySource: method.request.header.Authorization
+      AuthorizerResultTtlInSeconds: 60
+      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations"
+
+  V1Resource:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref Api, ParentId: !GetAtt Api.RootResourceId, PathPart: v1 }
+
+  V1ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref Api, ParentId: !Ref V1Resource, PathPart: "{proxy+}" }
+
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref Api, ParentId: !GetAtt Api.RootResourceId, PathPart: healthz }
+
+  V1ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref V1ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations"
+        TimeoutInMillis: !Ref ApiIntegrationTimeoutMs
+
+  HealthMethod:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_59
+            comment: "/healthz is public on purpose and only returns {\"ok\": true}; it reads no data."
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations"
+
+  # Errors produced by API Gateway itself (before our code runs) use the SAME
+  # body shape as the app's errors: {"error": {"code": ..., "message": ...}}.
+  UnauthorizedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: UNAUTHORIZED
+      StatusCode: "401"
+      ResponseTemplates:
+        application/json: '{"error": {"code": "unauthorized", "message": "Missing or invalid API key."}}'
+
+  AccessDeniedResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: ACCESS_DENIED                # authorizer Deny = suspended tenant (FR-1.6)
+      StatusCode: "403"
+      ResponseTemplates:
+        application/json: '{"error": {"code": "tenant_suspended", "message": "This account is not active."}}'
+
+  ThrottledResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: THROTTLED
+      StatusCode: "429"
+      ResponseTemplates:
+        application/json: '{"error": {"code": "rate_limited", "message": "Too many requests. Retry later."}}'
+
+  Default5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref Api
+      ResponseType: DEFAULT_5XX
+      ResponseTemplates:
+        application/json: '{"error": {"code": "internal_error", "message": "Something went wrong. Please retry."}}'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [V1ProxyMethod, HealthMethod, UnauthorizedResponse, AccessDeniedResponse, ThrottledResponse, Default5xxResponse]
+    Properties:
+      RestApiId: !Ref Api
+
+  # API Gateway needs an account-wide role to write access logs. This is a
+  # per-account, per-region SINGLETON: if another stack in the account already
+  # sets it, remove these two resources.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub slm-${Env}-apigateway-logs
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: Allow, Principal: { Service: apigateway.amazonaws.com }, Action: sts:AssumeRole }] }
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs]
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  ApiStage:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_120
+            comment: "No response cache: results are per tenant and change while a job runs; a cache also bills by the hour."
+          - id: CKV_AWS_73
+            comment: "X-Ray tracing off to save cost; switch on temporarily when debugging latency."
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Env
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: !Ref ApiThrottleRate
+          ThrottlingBurstLimit: !Ref ApiThrottleBurst
+          MetricsEnabled: true
+          LoggingLevel: "OFF"                  # execution logs can contain request data: never on
+          DataTraceEnabled: false
+      # Access logs: one line per request with ids, status and timings ONLY.
+      # No bodies, no headers, no query strings (NFR-S3).
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogs.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","time":"$context.requestTimeEpoch","method":"$context.httpMethod","resource":"$context.resourcePath","status":"$context.status","latency_ms":"$context.responseLatency","integration_ms":"$context.integrationLatency","tenant_id":"$context.authorizer.tenant_id","key_id":"$context.authorizer.key_id","waf":"$context.waf.status"}'
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
+
+  AuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/authorizers/${ApiAuthorizer}"
+
+  # ==============================================================================
+  # AWS WAF in front of the API (FR-1.9). Three rules (each rule costs USD 1/month):
+  #   1. rate limit per client IP
+  #   2. AWS managed "known bad inputs" (exploit patterns such as Log4j)
+  #   3. AWS managed IP reputation list (known bots / malicious sources)
+  # We do NOT use the AWS "common rule set": its body-size rule blocks bodies over
+  # 8 KB, which would block every direct-flow upload. The 4 MB limit is enforced by
+  # the app (decode_base64_strict, multipart size check) instead.
+  # ==============================================================================
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Condition: WafOn
+    Properties:
+      Name: !Sub slm-${Env}-api
+      Scope: REGIONAL
+      DefaultAction: { Allow: {} }
+      VisibilityConfig: { SampledRequestsEnabled: false, CloudWatchMetricsEnabled: true, MetricName: !Sub "slm-${Env}-waf" }
+      Rules:
+        - Name: rate-limit-per-ip
+          Priority: 0
+          Action: { Block: {} }
+          Statement:
+            RateBasedStatement: { Limit: !Ref WafRateLimitPerIp, AggregateKeyType: IP }
+          VisibilityConfig: { SampledRequestsEnabled: false, CloudWatchMetricsEnabled: true, MetricName: rate-limit-per-ip }
+        - Name: aws-known-bad-inputs
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesKnownBadInputsRuleSet }
+          VisibilityConfig: { SampledRequestsEnabled: false, CloudWatchMetricsEnabled: true, MetricName: aws-known-bad-inputs }
+        - Name: aws-ip-reputation
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesAmazonIpReputationList }
+          VisibilityConfig: { SampledRequestsEnabled: false, CloudWatchMetricsEnabled: true, MetricName: aws-ip-reputation }
+
+  WebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: WafOn
+    Properties:
+      WebACLArn: !GetAtt WebAcl.Arn
+      ResourceArn: !Sub "arn:aws:apigateway:${AWS::Region}::/restapis/${Api}/stages/${ApiStage}"
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for tenants, e.g. <ApiUrl>/v1/extractions
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${ApiStage}"
+  ApiId:              { Value: !Ref Api,                          Export: { Name: !Sub "slm-${Env}-ApiId" } }
+  ApiStageName:       { Value: !Ref ApiStage,                     Export: { Name: !Sub "slm-${Env}-ApiStageName" } }
+  JobsInteractiveDlq: { Value: !GetAtt JobsInteractiveDlq.QueueName, Export: { Name: !Sub "slm-${Env}-JobsInteractiveDlqName" } }
+  JobsBackgroundDlq:  { Value: !GetAtt JobsBackgroundDlq.QueueName,  Export: { Name: !Sub "slm-${Env}-JobsBackgroundDlqName" } }
+  WebhooksDlq:        { Value: !GetAtt WebhooksDlq.QueueName,        Export: { Name: !Sub "slm-${Env}-WebhooksDlqName" } }
+  JobsInteractive:    { Value: !GetAtt JobsInteractiveQueue.QueueName, Export: { Name: !Sub "slm-${Env}-JobsInteractiveName" } }
+  WorkerFunctionName: { Value: !Ref WorkerFunction,               Export: { Name: !Sub "slm-${Env}-WorkerFunctionName" } }
+  ApiFunctionName:    { Value: !Ref ApiFunction,                  Export: { Name: !Sub "slm-${Env}-ApiFunctionName" } }

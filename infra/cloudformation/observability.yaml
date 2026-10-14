@@ -1,0 +1,224 @@
+# ==============================================================================
+# Stack 4 of 4: OBSERVABILITY  (deploy last)
+#
+#   SNS topic      where every alarm and budget alert goes (email subscription)
+#   Alarms         messages in any dead-letter queue, worker errors, API 5xx,
+#                  jobs piling up in the interactive queue
+#   Budget         monthly USD limit with alerts at 80% and 100% (NFR-K3)
+#   Dashboard      one page: API traffic, worker health, queue depth
+#
+# Alarms only look at COUNTS and TIMINGS. Nothing here can expose document data.
+# ==============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SLM Fintech - observability stack (alarms, budget, dashboard)
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+  AlertEmail:
+    Type: String
+    Description: Address that receives alarms and budget alerts (must confirm the SNS subscription email).
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 150                              # NFR-K1 target; the estimate is ~USD 80 (docs/cost.md)
+
+Resources:
+  # Not KMS-encrypted on purpose: CloudWatch alarms and AWS Budgets can NOT publish
+  # to a topic that uses the AWS-managed aws/sns key (its key policy can't grant them
+  # access), and alerts contain only alarm names and numbers, never document data.
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_26
+            comment: "Alerts carry no data; aws/sns encryption would stop CloudWatch alarms and Budgets from publishing."
+    Properties:
+      TopicName: !Sub slm-${Env}-alerts
+      Subscription:
+        - { Protocol: email, Endpoint: !Ref AlertEmail }
+
+  # Who may publish. A topic policy REPLACES the default one, so it must list every
+  # publisher: CloudWatch alarms and AWS Budgets, both only from this account.
+  AlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertsTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [budgets.amazonaws.com, cloudwatch.amazonaws.com, events.amazonaws.com] }
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition: { StringEquals: { aws:SourceAccount: !Ref AWS::AccountId } }
+
+  # --- A message in a dead-letter queue = a job or webhook failed 3-5 times (NFR-R1).
+  JobsInteractiveDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-dlq-jobs-interactive
+      AlarmDescription: A job failed 3 times and moved to the dead-letter queue. See RUNBOOK in docs.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: { "Fn::ImportValue": !Sub "slm-${Env}-JobsInteractiveDlqName" } }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  JobsBackgroundDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-dlq-jobs-background
+      AlarmDescription: A background job failed 3 times and moved to the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: { "Fn::ImportValue": !Sub "slm-${Env}-JobsBackgroundDlqName" } }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  WebhooksDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-dlq-webhooks
+      AlarmDescription: A webhook could not be delivered after 5 attempts (tenant endpoint down?).
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: { "Fn::ImportValue": !Sub "slm-${Env}-WebhooksDlqName" } }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # --- Jobs that clients are waiting for are piling up (Bedrock throttling? worker failing?)
+  InteractiveBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-interactive-backlog
+      AlarmDescription: The oldest waiting interactive job is older than 2 minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions: [{ Name: QueueName, Value: { "Fn::ImportValue": !Sub "slm-${Env}-JobsInteractiveName" } }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 120
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # --- Worker crashed (unhandled exception or timeout), not "bad document" (those are normal).
+  WorkerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-worker-errors
+      AlarmDescription: The worker Lambda raised errors or timed out.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: { "Fn::ImportValue": !Sub "slm-${Env}-WorkerFunctionName" } }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # --- The API is answering with server errors.
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub slm-${Env}-api-5xx
+      AlarmDescription: The API returned 5 or more server errors in 5 minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - { Name: ApiName, Value: !Sub "slm-${Env}-api" }
+        - { Name: Stage, Value: { "Fn::ImportValue": !Sub "slm-${Env}-ApiStageName" } }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+
+  # --- Security-relevant changes, alerted the moment they happen (security.md §5.2, §6.4).
+  #   * Bedrock model-invocation logging switched on: it would copy every document
+  #     and result into logs. Must stay OFF.
+  #   * A KMS key disabled or scheduled for deletion: data would become unreadable.
+  # Works from CloudTrail management events (security.yaml). EventBridge rules for
+  # AWS events are free, so this replaces a paid AWS Config rule.
+  SecurityChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub slm-${Env}-security-change
+      EventPattern:
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [bedrock.amazonaws.com, kms.amazonaws.com]
+          eventName: [PutModelInvocationLoggingConfiguration, DisableKey, ScheduleKeyDeletion]
+      Targets:
+        - Id: alerts
+          Arn: !Ref AlertsTopic
+
+  # --- Cost guard rail (NFR-K3). Budgets are free for the first two per account.
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub slm-${Env}-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertsTopic }]
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertsTopic }]
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: SNS, Address: !Ref AlertsTopic }]
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub slm-${Env}
+      DashboardBody: !Sub
+        - |
+          {"widgets": [
+            {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6, "properties": {
+              "title": "API requests and errors", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+              "metrics": [["AWS/ApiGateway", "Count", "ApiName", "slm-${Env}-api", "Stage", "${Stage}"],
+                          [".", "4XXError", ".", ".", ".", "."], [".", "5XXError", ".", ".", ".", "."]]}},
+            {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6, "properties": {
+              "title": "Worker: invocations, errors, p90 duration (ms)", "region": "${AWS::Region}", "period": 300,
+              "metrics": [["AWS/Lambda", "Invocations", "FunctionName", "${Worker}", {"stat": "Sum"}],
+                          [".", "Errors", ".", ".", {"stat": "Sum"}],
+                          [".", "Duration", ".", ".", {"stat": "p90", "yAxis": "right"}]]}},
+            {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6, "properties": {
+              "title": "Queue depth", "region": "${AWS::Region}", "stat": "Maximum", "period": 60,
+              "metrics": [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "slm-${Env}-jobs-interactive"],
+                          ["...", "slm-${Env}-jobs-background"], ["...", "slm-${Env}-webhooks"]]}},
+            {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6, "properties": {
+              "title": "Dead-letter queues (should be 0)", "region": "${AWS::Region}", "stat": "Maximum", "period": 300,
+              "metrics": [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "slm-${Env}-jobs-interactive-dlq"],
+                          ["...", "slm-${Env}-jobs-background-dlq"], ["...", "slm-${Env}-webhooks-dlq"]]}}
+          ]}
+        - Stage: { "Fn::ImportValue": !Sub "slm-${Env}-ApiStageName" }
+          Worker: { "Fn::ImportValue": !Sub "slm-${Env}-WorkerFunctionName" }
+
+Outputs:
+  AlertsTopicArn: { Value: !Ref AlertsTopic }

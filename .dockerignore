@@ -1,0 +1,11 @@
+# Keep the image small and free of anything that isn't runtime code.
+.git
+.venv
+.ruff_cache
+**/__pycache__
+data/
+docs/
+infra/
+tests/
+scripts/
+.env*

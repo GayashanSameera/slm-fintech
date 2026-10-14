@@ -2,31 +2,33 @@
 
 | | |
 |---|---|
-| Version | 0.2 (draft for review) |
-| Date | 2026-10-13 |
+| Version | 0.3 (infrastructure recalculated from the CloudFormation templates) |
+| Date | 2026-10-14 |
 | Design | [architecture.md](architecture.md) (Bedrock, us-east-1, Rung 0 parsers + model ladder) |
 | Target | NFR-K1: about USD 150 per month at 1,000 pages per day |
-| Changes since 0.1 | Workload is mostly bank statements (~70% of pages). Digital statements from known banks are parsed by Python code and verified by Nova Lite (architecture §3.3). Security controls are included in the totals. |
+| Changes since 0.2 | Infrastructure cost is now priced resource by resource from `infra/cloudformation/*.yaml` (§4.2) instead of estimated: ~USD 20 instead of USD 44. Model cost unchanged. |
 
 ## 1. Result
 
-At **1,000 pages per business day** (22,000 pages a month), the platform costs about **USD 80 per month** all-in: about **USD 0.0036 per page**. That is about half the USD 150 target.
+At **1,000 pages per business day** (22,000 pages a month), the platform costs about **USD 56 per month**: about **USD 0.0025 per page**. That is well under the USD 150 target. Lambda's always-free tier brings the real bill to about USD 52.
 
-| Scenario | Pages / month | Model (Bedrock) | Infrastructure | Security controls | **Total / month** |
-|---|---|---|---|---|---|
-| **Base: 1,000 pages per business day** | 22,000 | 36 | 34 | 10 | **USD 80** |
-| 1,000 pages every calendar day | 30,000 | 47 | 37 | 10 | **USD 94** |
-| Pessimistic (§5.1) | 22,000 | 101 | 34 | 10 | **USD 145** |
-| Growth: 5,000 pages per business day (NFR-P1) | 110,000 | 160 | 62 | 10 | **USD 232** |
+| Scenario | Pages / month | Model (Bedrock) | Infrastructure (templates) | **Total / month** |
+|---|---|---|---|---|
+| **Base: 1,000 pages per business day** | 22,000 | 36 | 20 | **USD 56** |
+| 1,000 pages every calendar day | 30,000 | 47 | 22 | **USD 69** |
+| Pessimistic (§5.1) | 22,000 | 101 | 20 | **USD 121** |
+| Growth: 5,000 pages per business day (NFR-P1) | 110,000 | 160 | 47 | **USD 207** |
+| Dev environment (WAF off, ~500 test pages) | 500 | ~1 | 5 | **~USD 6** |
 
-All figures are in USD, exclude taxes and are rounded. Prices are us-east-1 list prices as of 2026-10-13; Bedrock prices must be confirmed (§2.1).
+All figures are in USD, exclude taxes and are rounded. Infrastructure is shown **before** free tiers. Prices are us-east-1 list prices as of 2026-10-13; Bedrock prices must be confirmed (§2.1).
 
 Key points:
 
 - **Rung 0 does the heavy lifting.** About 43% of pages (digital bank statements from known banks, plus common payslips) are read by Python parsers. Each result is still checked by the cheapest AI model, Nova Lite, which costs ~USD 0.00025 per page, against ~USD 0.0026 per statement page through the AI ladder. Without Rung 0, the model line would be ~USD 54 instead of ~USD 36.
-- **Sonnet escalations are still the biggest model cost:** ~USD 15 of the USD 36. Keeping the escalation rate low remains the main tuning lever (§6).
-- **About USD 40 is a fixed floor** (WAF, monitoring, keys, secrets, security controls). The rest scales with pages.
+- **Sonnet escalations are still the biggest single cost:** ~USD 15 of the USD 56. Keeping the escalation rate low remains the main tuning lever (§6).
+- **The fixed floor is about USD 13** (WAF 8, KMS keys 3, secrets 0.80, alarms 0.60, idle queue polling 0.40). Everything else scales with pages.
 - **Nothing is billed by the hour.** With no traffic, only the fixed floor is paid.
+- **Optional security add-ons are not in the totals** (security.md §14: account-wide GuardDuty, Inspector, Object Lock archive, S3 data events): about **+USD 10** if adopted.
 
 ## 2. Unit prices used
 
@@ -102,31 +104,43 @@ Anthropic documents a 10% premium for geographic routing over global routing, so
 | Prompt-cache writes, type detection | | | USD 5 |
 | **Model total** | | **~USD 0.0016 per page on average** | **USD 36** |
 
-### 4.2 Infrastructure and security cost
+### 4.2 Infrastructure cost, from the CloudFormation templates
 
-| Service | What drives it | Monthly |
+Every resource in `infra/cloudformation/` priced with its real settings. Workload: 22,000 pages ≈ 5,500 documents (about 4 pages each).
+
+| Resource (template) | What drives the cost | Monthly |
 |---|---|---|
-| AWS WAF | Fixed: 1 web ACL + 3 rules | 8.00 |
-| CloudWatch | ~20 custom metrics, ~12 alarms, logs kept 180 days, 1 dashboard | 7.60 |
-| Secrets Manager | 1 API-key pepper + ~10 tenant webhook secrets | 4.45 |
-| Lambda | API wait loop, worker, verifier, authorizer, intake | 3.80 |
-| KMS | 3 customer-managed keys | 3.20 |
-| AWS Config | Rule keeping Bedrock invocation logging off | 2.00 |
-| GuardDuty Malware Protection | Every uploaded file | 2.00 |
-| S3, DynamoDB, SQS | Storage, job records, queues | 1.70 |
-| CloudTrail, ECR, Route 53 | Data events, worker image, hosted zone | 1.50 |
-| API Gateway | ~10,000 requests | 0.03 |
-| **Infrastructure total** | | **USD 34** |
-| Security controls ([security.md](security.md) §14): extra Config rules, account-level GuardDuty, Inspector, CloudTrail data events, Object Lock archive | | **USD 10** |
+| AWS WAF (`app.yaml`) | Fixed: 1 web ACL USD 5 + 3 rules USD 3; requests negligible. **Off in dev** (`EnableWaf=false`) | 8.01 |
+| KMS (`data.yaml`) | Fixed: 3 customer-managed keys USD 3. Requests stay tiny thanks to S3 Bucket Key, SQS data-key reuse (1 h) and secret caching | 3.15 |
+| GuardDuty Malware Protection (`app.yaml`) | Every object under `tenants/` (~5,800 objects, ~6 GB) | 1.74 |
+| Secrets Manager (`security.yaml`, `create_tenant.py`) | API-key pepper + 1 webhook secret (LYNEAR) at USD 0.40 each; +0.40 per extra tenant with a webhook | 0.86 |
+| CloudWatch (`app.yaml`, `observability.yaml`) | 6 alarms × USD 0.10; ~0.3 GB of logs; 1 dashboard (free up to 3 per account) | 0.81 |
+| SQS (`app.yaml`) | Lambda long-polls 3 queues **even when idle** (~1.9 M requests a month; first 1 M free) | 0.40 |
+| DynamoDB (`data.yaml`) | ~50 write + ~35 read units per document, ~0.2 GB stored, PITR; stream reads by Lambda are free | 0.27 |
+| ECR (`data.yaml`) | ~1 GB of images (last 10 kept; layers shared) | 0.10 |
+| S3 documents bucket (`data.yaml`) | PUT/GET requests; files are deleted after processing, so storage is near zero | 0.10 |
+| API Gateway REST (`app.yaml`) | ~16,500 requests at USD 3.50 per million | 0.06 |
+| CloudTrail (`security.yaml`) | Management events: the first trail is free; ~1 GB of log files in S3 | 0.05 |
+| Lambda (`app.yaml`) | ~330,000 GB-seconds (worker ~20 s at 2 GB per document, API wait ~20 s at 1 GB) | 4.46 |
+| EventBridge, Scheduler, SNS, Budgets | AWS service events and the first 14 M schedule runs are free; email alerts free; first 2 budgets free | 0.00 |
+| **Infrastructure total (gross)** | | **USD 19.99** |
+| Lambda always-free tier (400,000 GB-s and 1 M requests a month) | | −4.46 |
+| **Infrastructure total (net)** | | **USD 15.53** |
+
+Notes:
+
+- **KMS key rotation** is on (yearly). AWS adds USD 1 per key per month for each of the first two rotations, so the KMS line becomes ~USD 6 in year 2 and ~USD 9 from year 3.
+- **Not in the templates, so not in the total:** custom CloudWatch metrics for the cost alarms in §9 (about USD 0.30 each when added), a custom domain (Route 53 USD 0.50 per hosted zone), and the security add-ons above.
+- The calculation script is simple arithmetic on the numbers in this table; re-run it with phase-0 measurements (seconds per document, objects per job).
 
 ### 4.3 Per-unit cost
 
 | Unit | Model only | All-in |
 |---|---|---|
-| Per page | USD 0.0016 | USD 0.0036 |
-| Per 1,000 pages | USD 1.61 | USD 3.61 |
-| Per 10-page bank statement (Rung 0 path) | USD 0.0025 | ~USD 0.022 |
-| Per 10-page bank statement (AI path, no escalation) | USD 0.0095 | ~USD 0.029 |
+| Per page | USD 0.0016 | USD 0.0025 |
+| Per 1,000 pages | USD 1.61 | USD 2.55 |
+| Per 10-page bank statement (Rung 0 path) | USD 0.0025 | ~USD 0.012 |
+| Per 10-page bank statement (AI path, no escalation) | USD 0.0095 | ~USD 0.019 |
 
 ## 5. Sensitivity
 
@@ -139,7 +153,7 @@ Assumptions:
 - Output is 30% longer.
 - The verifier disagrees on 25% of Rung 0 pages.
 
-Model cost rises to **USD 101**, and the total to **USD 145**. That is still within USD 150, but with little room left.
+Model cost rises to **USD 101**, and the total to **USD 121**. That is still within USD 150.
 
 ### 5.2 How each assumption moves the monthly total (base case)
 
@@ -151,7 +165,7 @@ Model cost rises to **USD 101**, and the total to **USD 145**. That is still wit
 | Verifier disagreement 10% → 30% | + USD 5 |
 | Output tokens +30% | + USD 4 |
 | Second-try rate +10 points | + USD 2 |
-| Volume doubles to 44,000 pages | + USD 38 (model, Lambda, GuardDuty) |
+| Volume doubles to 44,000 pages | + USD 40 (model 36, GuardDuty 2, Lambda 2 once past the free tier) |
 
 ### 5.3 Starting the AI ladder on Nova Lite
 
@@ -171,9 +185,9 @@ Decide per document type from phase-0 measurements.
 |---|---|---|
 | Lower the Sonnet escalation rate (better prompts, few-shot examples, escalate only on errors that matter) | Up to ~USD 12 | Evaluation work in phase 3 |
 | Add Rung 0 parsers for more banks, as sample data shows which banks are common | ~USD 2 per 10 points of coverage | ~1–2 days per bank layout, plus upkeep |
-| Drop AWS WAF; rely on API Gateway throttling | USD 8 | Less protection against abusive traffic |
+| Drop AWS WAF in prod too (`EnableWaf=false`); rely on API Gateway throttling | USD 8 | Less protection against abusive traffic (dev already runs without it) |
 | `checks_only` verification for tenants that accept it (no AI call for Rung 0 pages) | ~USD 2 | Header fields such as names are no longer AI-checked |
-| One KMS key instead of three | USD 2 | Coarser key separation |
+| One KMS key instead of three | USD 2 (USD 6 from year 3, with rotation charges) | Coarser key separation |
 
 None is needed to meet NFR-K1.
 
@@ -181,8 +195,8 @@ None is needed to meet NFR-K1.
 
 | Approach (22,000 pages, statement-heavy mix) | Monthly |
 |---|---|
-| **This design: Rung 0 parsers + AI verification + model ladder** | **~USD 80** |
-| Same design without Rung 0 (AI ladder for every page) | ~USD 98 |
+| **This design: Rung 0 parsers + AI verification + model ladder** | **~USD 56** |
+| Same design without Rung 0 (AI ladder for every page) | ~USD 74 |
 | Sonnet 5.5 for every page | ~USD 400 |
 | Previous self-hosted design (GPU, business hours only) | ~USD 180 |
 | Bedrock Data Automation, custom blueprints | ~USD 925 |
@@ -191,7 +205,7 @@ None is needed to meet NFR-K1.
 
 | Item | Estimate |
 |---|---|
-| Dev/test AWS environment | ~USD 15–20 a month |
+| Dev/test AWS environment (separate account, WAF off) | ~USD 6 a month (§1) |
 | Accuracy evaluation runs (~250 labelled documents per run) | ~USD 2 per run on Haiku; ~USD 11 with Sonnet comparisons |
 | AWS Support plan (optional; Business starts at USD 100 a month) | Not included |
 | Rung 0 parser development and upkeep | Engineering time, not AWS cost |

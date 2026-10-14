@@ -21,7 +21,7 @@ Everything else is serverless (API Gateway, Lambda, SQS, DynamoDB, S3, KMS), so 
 | Cold start / Spot loss | Minutes; needs retries (NFR-R2) | None |
 | Scanned 4-page document | ~2 min target | Expected well under 40 s (to measure) |
 | Ops work | AMIs, drivers, vLLM, ASG schedule, VPC endpoints | None for the model |
-| Estimated monthly cost at 1,000 pages/day | ~USD 180 | **~USD 80** including security controls (§12, [cost.md](cost.md)) |
+| Estimated monthly cost at 1,000 pages/day | ~USD 180 | **~USD 56** for what the CloudFormation templates deploy; ~USD 66 with the optional security add-ons (§12, [cost.md](cost.md)) |
 | Per-tenant tuning | LoRA adapters | Model profiles with prompts and few-shot examples (§10) |
 
 ## 2. Requirement changes this design needs
@@ -256,7 +256,7 @@ How to read it:
 | Upload intake | EventBridge rules + intake Lambda (128 MB) | S3 *Object Created* events (bucket EventBridge notifications on) set the job to `scanning`; GuardDuty scan results move it to `queued` or `failed` (§5.1) |
 | Encryption | Customer-managed KMS keys (documents, table, logs) | The encryption context carries `tenant_id`, so CloudTrail shows which tenant's data each decrypt touched. |
 | Secrets | Secrets Manager | API-key pepper, per-tenant webhook secrets (NFR-S9). |
-| Audit | CloudWatch Logs `audit` group (KMS, 180-day retention) + CloudTrail | NFR-S4, NFR-C4 |
+| Audit | Audit records in the `api` Lambda log group (KMS, 180-day retention) + CloudTrail trail with log-file validation (`security.yaml`) | NFR-S4, NFR-C4 |
 | Ops | CloudWatch dashboard and alarms, AWS Budgets | NFR-O4, NFR-K3 |
 | IaC | AWS CloudFormation; AWS-only, no state backend to run | NFR-O3 |
 
@@ -266,13 +266,13 @@ All application code runs as AWS Lambda functions. Nothing runs continuously, so
 
 | Lambda function | Trigger | Does | Memory / timeout | Package |
 |---|---|---|---|---|
-| `authorizer` | API Gateway, every request (cached 60 s) | API key → tenant, status, scopes | 256 MB / 5 s | zip |
-| `api` | API Gateway | create (direct and presigned), get with wait, list, delete, corrections, document types, chat stubs | 1 GB / 45 s | container image (shared with worker) |
-| `worker` | SQS `jobs-interactive` and `jobs-background` | validate, preprocess, **Rung 0 parsers + Nova Lite verification**, type detection, AI ladder, checks, masking, storage | 2 GB / 120 s | container image |
-| `intake` | EventBridge: S3 *Object Created*, GuardDuty scan result | `awaiting_upload` → `scanning` → `queued` or `failed` | 128 MB / 10 s | zip |
-| `webhook` | SQS `webhooks` | sign and deliver webhook events | 128 MB / 15 s | zip |
-| `retention-cleaner` | DynamoDB stream (TTL deletes) | delete the job's S3 prefix | 128 MB / 30 s | zip |
-| `scan-sweeper` | EventBridge Scheduler, every 5 min | fail jobs stuck in `scanning` (`scan_timeout`) and expire `awaiting_upload` jobs | 128 MB / 60 s | zip |
+| `authorizer` | API Gateway, every request (cached 60 s) | API key → tenant, status, scopes | 256 MB / 5 s | container image (shared) |
+| `api` | API Gateway | create (direct and presigned), get with wait, list, delete, corrections, document types, chat stubs | 1 GB / 45 s | container image (shared) |
+| `worker` | SQS `jobs-interactive` and `jobs-background` | validate, preprocess, **Rung 0 parsers + Nova Lite verification**, type detection, AI ladder, checks, masking, storage | 2 GB / 120 s | container image (shared) |
+| `intake` | EventBridge: S3 *Object Created*, GuardDuty scan result | `awaiting_upload` → `scanning` → `queued` or `failed` | 128 MB / 10 s | container image (shared) |
+| `webhook` | SQS `webhooks` | sign and deliver webhook events | 128 MB / 15 s | container image (shared) |
+| `retention-cleaner` | DynamoDB stream (TTL deletes) | delete the job's S3 prefix | 128 MB / 30 s | container image (shared) |
+| `scan-sweeper` | EventBridge Scheduler, every 5 min | fail jobs stuck in `scanning` (`scan_timeout`) and expire `awaiting_upload` jobs | 128 MB / 60 s | container image (shared) |
 
 All functions use arm64 (Graviton) for lower cost and run outside a VPC (§8.5). Each has its own least-privilege IAM role (security.md §6.3). The Rung 0 parsers are plain Python, so they run inside the worker; they need no extra service.
 
@@ -1121,7 +1121,7 @@ Each object is tagged `retention=7d|30d|90d|365d`, and lifecycle rules expire ob
 
 ### 8.2 Isolation enforced by IAM
 
-The API and worker Lambdas do not read tenant data with their own roles. For each request or job they assume a `tenant-data` role with the session tag `tenant_id=<t>`; credentials are cached for 15 minutes per tenant. The role's policy:
+The API and worker Lambdas do not read tenant data with their own roles. For each request or job they assume a `tenant-data` role with the session tag `tenant_id=<t>`; 1-hour credentials are cached per tenant and renewed while more than 16 minutes are left, so every presigned upload URL they sign stays valid for its full 15 minutes. The role's policy:
 
 ```json
 {
@@ -1237,11 +1237,11 @@ The full model is in [cost.md](cost.md). The summary at 1,000 pages per business
 | | Monthly |
 |---|---|
 | Bedrock: Rung 0 verification (~43% of pages) + AI ladder for the rest (Haiku 5.5 start, 15% second tries, 5% Sonnet 5.5) | ~USD 36 |
-| Infrastructure (mostly a fixed floor: WAF, CloudWatch, Secrets Manager, KMS) | ~USD 34 |
-| Security controls ([security.md](security.md) §14) | ~USD 10 |
-| **Total** | **~USD 80** (USD 0.0036 per page) |
+| Infrastructure, priced from the CloudFormation templates (fixed floor ~USD 13: WAF, KMS, secrets, alarms) | ~USD 20 |
+| **Total** | **~USD 56** (USD 0.0025 per page) |
+| Optional security add-ons ([security.md](security.md) §14), not in the templates | +~USD 10 |
 
-Without Rung 0, the model line would be ~USD 54. Sonnet escalations remain the largest model cost (~USD 15), so the escalation rate and the Rung 0 verifier disagreement rate are both on the dashboard. The pessimistic case comes to about USD 145, still within the USD 150 target. AWS Budgets alerts fire at 80% and 100% of USD 150 (NFR-K3).
+Without Rung 0, the model line would be ~USD 54. Sonnet escalations remain the largest model cost (~USD 15), so the escalation rate and the Rung 0 verifier disagreement rate are both on the dashboard. The pessimistic case comes to about USD 121, still within the USD 150 target. AWS Budgets alerts fire at 80% and 100% of USD 150 (NFR-K3).
 
 ## 13. Observability (NFR-O4)
 

@@ -1,0 +1,332 @@
+# ==============================================================================
+# Stack 1 of 4: DATA  (deploy first)
+#
+# Everything that STORES something lives here, so it can outlive the code
+# stacks: you can delete and recreate `app` without losing a single job.
+#
+#   KMS keys       documents (S3 files), table (DynamoDB + SQS), logs (CloudWatch + secrets)
+#   DynamoDB       the single table `slm-<env>-main`            (architecture §7.1)
+#   S3             the documents bucket                         (architecture §7.2)
+#   ECR            the container image repository for all 7 Lambdas
+#
+# Other stacks read these resources through the Outputs/Exports at the bottom
+# (Fn::ImportValue "slm-<env>-TableName" etc.).
+#
+# Deploy:  see infra/cloudformation/README.md
+# ==============================================================================
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SLM Fintech - data stack (KMS, DynamoDB, S3, ECR)
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Environment name. Used in every resource name and export.
+
+  EnforceTenantEncryptionContext:
+    Type: String
+    AllowedValues: ["false", "true"]
+    Default: "false"
+    Description: >
+      "true" = KMS only decrypts an S3 object for a session tagged with the same tenant_id
+      (security.md §4.3, layer 3). This REQUIRES turning S3 Bucket Key off, because with
+      Bucket Key on, KMS sees the bucket ARN as the encryption context instead of our
+      {"tenant_id": ...}. Bucket Key off means one KMS request per object read/write
+      (a few dollars a month at our volume instead of cents).
+
+Conditions:
+  EnforceContext: !Equals [!Ref EnforceTenantEncryptionContext, "true"]
+
+Resources:
+  # ----------------------------------------------------------------------------
+  # KMS keys (security.md §6.4). Customer-managed, so WE control who may decrypt
+  # and every use is logged in CloudTrail. Automatic yearly rotation is on.
+  #
+  # Each key policy starts with the standard "account root" statement: it lets
+  # IAM policies grant use of the key. The tenant-data role (security.yaml)
+  # gets its narrow, tenant-conditioned permission that way.
+  # ----------------------------------------------------------------------------
+  DocumentsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain          # deleting a key makes every file encrypted with it unreadable
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub slm-${Env} documents (S3 uploads, results, training copies)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministersKeyThroughIam
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+
+  DocumentsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/slm-${Env}-documents
+      TargetKeyId: !Ref DocumentsKey
+
+  TableKey:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_33
+            comment: "AWS documented pattern: Principal * limited by kms:CallerAccount (this account) and kms:ViaService. Access to the data itself is still decided by IAM."
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub slm-${Env} table (DynamoDB items and SQS messages)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministersKeyThroughIam
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+          # The pattern AWS documents for DynamoDB and SQS: principals of THIS account
+          # may use the key, but ONLY through those two services. Whether they may read
+          # the table or queue at all is still decided by their IAM policy.
+          - Sid: UseThroughDynamoDbAndSqsOnly
+            Effect: Allow
+            Principal: { AWS: "*" }
+            Action: [kms:Encrypt, kms:Decrypt, kms:ReEncrypt*, kms:GenerateDataKey*, kms:DescribeKey, kms:CreateGrant]
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+                kms:ViaService:
+                  - !Sub dynamodb.${AWS::Region}.amazonaws.com
+                  - !Sub sqs.${AWS::Region}.amazonaws.com
+
+  TableKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/slm-${Env}-table
+      TargetKeyId: !Ref TableKey
+
+  LogsKey:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_33
+            comment: "AWS documented pattern: Principal * limited by kms:CallerAccount (this account) and kms:ViaService. Access to the data itself is still decided by IAM."
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub slm-${Env} logs and secrets (CloudWatch Logs, Secrets Manager)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministersKeyThroughIam
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+          # CloudWatch Logs encrypts log groups itself, so the service needs the key,
+          # limited to log groups in this account and region.
+          - Sid: CloudWatchLogsEncryptsLogGroups
+            Effect: Allow
+            Principal: { Service: !Sub "logs.${AWS::Region}.amazonaws.com" }
+            Action: [kms:Encrypt*, kms:Decrypt*, kms:ReEncrypt*, kms:GenerateDataKey*, kms:Describe*]
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+          # CloudTrail (security.yaml) encrypts its log files with this key, only for
+          # trails in this account.
+          - Sid: CloudTrailEncryptsLogFiles
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: [kms:GenerateDataKey*, kms:DescribeKey]
+            Resource: "*"
+            Condition:
+              StringLike:
+                kms:EncryptionContext:aws:cloudtrail:arn: !Sub "arn:aws:cloudtrail:*:${AWS::AccountId}:trail/*"
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          # Secrets Manager: same "only through the service" pattern as the table key.
+          # Who may READ a secret is decided by secretsmanager:GetSecretValue in IAM.
+          - Sid: UseThroughSecretsManagerOnly
+            Effect: Allow
+            Principal: { AWS: "*" }
+            Action: [kms:Decrypt, kms:GenerateDataKey*, kms:DescribeKey]
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+                kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+  LogsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/slm-${Env}-logs
+      TargetKeyId: !Ref LogsKey
+
+  # ----------------------------------------------------------------------------
+  # DynamoDB single table (architecture §7.1).
+  #   PK/SK              "TENANT#<t>" / "JOB#<id>", "APIKEY#<hmac>" / "APIKEY", ...
+  #   GSI "pending"      sparse index: only jobs waiting for an upload or a scan
+  #                      carry pending_pk, so the scan-sweeper reads just those.
+  #   TTL expires_at     DynamoDB deletes expired jobs for free (NFR-C5)...
+  #   Stream OLD_IMAGE   ...and the retention-cleaner Lambda sees each deleted
+  #                      item, so it can delete the job's S3 files too.
+  # Must match tests/conftest.py create_resources(), which builds the same table in moto.
+  # ----------------------------------------------------------------------------
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub slm-${Env}-main
+      BillingMode: PAY_PER_REQUEST            # on-demand: pay per request, nothing while idle
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: pending_pk, AttributeType: S }
+        - { AttributeName: pending_deadline, AttributeType: N }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: pending                   # app/storage/jobs.py PENDING_GSI
+          KeySchema:
+            - { AttributeName: pending_pk, KeyType: HASH }
+            - { AttributeName: pending_deadline, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      StreamSpecification:
+        StreamViewType: OLD_IMAGE              # the retention cleaner needs the deleted item
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true       # restore to any second in the last 35 days
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref TableKey
+      DeletionProtectionEnabled: true          # a stack mistake can't drop the table
+      Tags:
+        - { Key: app, Value: slm }
+
+  # ----------------------------------------------------------------------------
+  # S3 documents bucket (architecture §7.2, security.md §7.5).
+  #   tenants/<t>/jobs/<job>/source        the uploaded file (deleted after processing)
+  #   tenants/<t>/jobs/<job>/result.json   results larger than 100 KB
+  #   tenants/<t>/training/...             consented training copies
+  # ----------------------------------------------------------------------------
+  Bucket:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_21
+            comment: "Versioning stays OFF on purpose: a deleted document must really be gone (retention, NFR-C5, FR-2.9)."
+          - id: CKV_AWS_18
+            comment: "Access logs would record object keys (tenant and job ids) in yet another place; CloudTrail covers auditing."
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub slm-${Env}-docs-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:         # nothing in this bucket can ever be made public
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]   # ACLs off; IAM decides everything
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt DocumentsKey.Arn
+            # Bucket Key caches a data key per bucket: ~99% fewer KMS requests. It must be
+            # off when the per-tenant encryption context is enforced (see the parameter).
+            BucketKeyEnabled: !If [EnforceContext, false, true]
+      # S3 sends "Object Created" events to EventBridge. The intake Lambda (app.yaml)
+      # and GuardDuty Malware Protection both depend on this.
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      LifecycleConfiguration:
+        Rules:
+          # BACKSTOP only. Normal deletion is per job: the worker deletes the source
+          # after processing, and the retention cleaner deletes the rest when DynamoDB
+          # TTL removes the job. This catches anything those miss. 400 days is longer
+          # than the longest retention setting (365 days).
+          - Id: backstop-expire-everything
+            Status: Enabled
+            Prefix: tenants/
+            ExpirationInDays: 400
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+      Tags:
+        - { Key: app, Value: slm }
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Refuse any request that is not over TLS (NFR-S2).
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt Bucket.Arn, !Sub "${Bucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: "false" } }
+          # If a writer names a KMS key, it must be OUR documents key. (Writers that
+          # name none get the bucket default, which is also our key.)
+          - Sid: DenyOtherKmsKeys
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "${Bucket.Arn}/*"
+            Condition:
+              StringNotEqualsIfExists:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt DocumentsKey.Arn
+
+  # ----------------------------------------------------------------------------
+  # ECR repository for the ONE container image that all 7 Lambdas run
+  # (the Dockerfile in the repo root). It lives in this stack because the image
+  # must be pushed BEFORE the app stack can create the functions.
+  # ----------------------------------------------------------------------------
+  ImageRepository:
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_136
+            comment: "The image contains application code only, never customer data. AES256 at rest is enough."
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub slm-${Env}
+      ImageTagMutability: IMMUTABLE           # a tag always means the same image (tag = git SHA)
+      ImageScanningConfiguration: { ScanOnPush: true }   # basic vulnerability scan of every push
+      EncryptionConfiguration: { EncryptionType: AES256 }
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules": [{"rulePriority": 1, "description": "keep the last 10 images (enough to roll back)",
+            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10},
+            "action": {"type": "expire"}}]}
+
+Outputs:
+  TableName:        { Value: !Ref Table,                 Export: { Name: !Sub "slm-${Env}-TableName" } }
+  TableArn:         { Value: !GetAtt Table.Arn,          Export: { Name: !Sub "slm-${Env}-TableArn" } }
+  TableStreamArn:   { Value: !GetAtt Table.StreamArn,    Export: { Name: !Sub "slm-${Env}-TableStreamArn" } }
+  BucketName:       { Value: !Ref Bucket,                Export: { Name: !Sub "slm-${Env}-BucketName" } }
+  BucketArn:        { Value: !GetAtt Bucket.Arn,         Export: { Name: !Sub "slm-${Env}-BucketArn" } }
+  DocumentsKeyArn:  { Value: !GetAtt DocumentsKey.Arn,   Export: { Name: !Sub "slm-${Env}-DocumentsKeyArn" } }
+  TableKeyArn:      { Value: !GetAtt TableKey.Arn,       Export: { Name: !Sub "slm-${Env}-TableKeyArn" } }
+  LogsKeyArn:       { Value: !GetAtt LogsKey.Arn,        Export: { Name: !Sub "slm-${Env}-LogsKeyArn" } }
+  ImageRepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
+    Export: { Name: !Sub "slm-${Env}-ImageRepositoryUri" }

@@ -34,8 +34,11 @@ _BOTO_CONFIG = Config(retries={"max_attempts": 4, "mode": "adaptive"})
 
 _lock = threading.Lock()
 _tenant_sessions: dict[str, tuple[float, boto3.Session]] = {}
-_REFRESH_MARGIN_S = 60       # get new credentials 1 minute before the old ones expire
-_SESSION_DURATION_S = 900    # 15 minutes: the shortest STS allows
+_SESSION_DURATION_S = 3600   # 1 hour: the longest STS allows when a role assumes a role
+# A presigned upload URL stops working when the credentials that signed it expire.
+# So a cached session is replaced while it still has MORE than one full upload-URL
+# lifetime left (15 min + 1 min spare). Every URL we hand out is valid for its whole TTL.
+_REFRESH_MARGIN_S = settings.upload_url_ttl_seconds + 60
 
 
 @lru_cache(maxsize=1)
@@ -44,7 +47,7 @@ def platform_session() -> boto3.Session:
 
 
 def tenant_session(tenant_id: str) -> boto3.Session:
-    """A boto3 session whose credentials only reach `tenant_id`'s data (cached ~15 min)."""
+    """A boto3 session whose credentials only reach `tenant_id`'s data (cached up to ~44 min)."""
     if settings.is_local or not settings.tenant_data_role_arn:
         return platform_session()
 

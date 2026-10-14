@@ -93,7 +93,8 @@ Isolation is enforced in **three independent layers**. Any one of them should be
 The API and worker Lambdas have **no permission on tenant data** in their own execution roles. To touch tenant data they must assume the `tenant-data` role with a session tag:
 
 ```python
-# Simplified: the real code caches credentials per tenant for 15 minutes.
+# Simplified: the real code caches 1-hour credentials per tenant and renews them
+# while more than one upload-URL lifetime (16 min) is still left.
 sts.assume_role(
     RoleArn=TENANT_DATA_ROLE_ARN,
     RoleSessionName=f"job-{job_id}",
@@ -104,17 +105,17 @@ sts.assume_role(
 The `tenant-data` role allows:
 
 - DynamoDB actions only where `dynamodb:LeadingKeys` = `TENANT#${aws:PrincipalTag/tenant_id}`.
-- S3 actions only on `tenants/${aws:PrincipalTag/tenant_id}/*`.
-- KMS `Decrypt` / `GenerateDataKey` only when the encryption context `tenant_id` equals `${aws:PrincipalTag/tenant_id}`.
+- S3 object actions only on `tenants/${aws:PrincipalTag/tenant_id}/*`, and `s3:ListBucket` only with the prefix `tenants/${aws:PrincipalTag/tenant_id}/` (needed to delete a job's whole folder).
+- KMS `Decrypt` / `GenerateDataKey` on the `documents` key only through S3. With the stack parameter `EnforceTenantEncryptionContext=true`, also only when the encryption context `tenant_id` equals `${aws:PrincipalTag/tenant_id}` (layer 3, §4.3).
 
-The role's trust policy allows `sts:AssumeRole` and `sts:TagSession` only from the API and worker roles, and requires the `tenant_id` tag (`aws:RequestTag/tenant_id` must be present). If code builds the wrong key, for example by passing tenant B's ID to a query while the session is tagged for tenant A, AWS returns `AccessDenied`.
+The role's trust policy allows `sts:AssumeRole` and `sts:TagSession` only from the platform's own Lambda roles (names `slm-<env>-fn-*`), and requires the session to carry exactly one tag, `tenant_id`, with a value of the form `t_*`. Every function that touches tenant data goes through this role: api, worker, intake, scan-sweeper, webhook (reads the tenant's webhook settings) and retention-cleaner. If code builds the wrong key, for example by passing tenant B's ID to a query while the session is tagged for tenant A, AWS returns `AccessDenied`.
 
 The only roles that can read across tenants are:
 
 | Role | Why | Limits |
 |---|---|---|
-| Authorizer | Looks up `APIKEY#<hash>` items, which are not under a tenant key | Can read only `APIKEY#` items (LeadingKeys condition); read-only |
-| Retention cleaner | Deletes S3 prefixes after DynamoDB TTL expiry | Delete-only on `tenants/*/jobs/*`; no read |
+| Authorizer | Looks up `APIKEY#<hash>` items, which are not under a tenant key, then the tenant's `PROFILE` to check it is active | `GetItem` only, on `APIKEY#*` and `TENANT#*` keys (LeadingKeys condition); read-only |
+| Scan sweeper | Finds jobs stuck waiting for an upload or a scan, across all tenants | `Query` on the sparse `pending` index only (job ids and statuses); each status change then goes through `tenant-data` |
 | Operator break-glass | Incident investigation | §6.2 |
 
 ### 4.3 Layer 3: encryption context
@@ -202,17 +203,21 @@ The parsers handle untrusted PDFs, so they get the same protections as the rest 
 
 | Role | Allowed |
 |---|---|
-| Authorizer | Read `APIKEY#*` and `TENANT#*/PROFILE` items; read the pepper secret |
-| API Lambda | Assume `tenant-data`; send to job queues; create presigned POSTs (through the tenant session) |
-| Worker | Assume `tenant-data`; invoke the two allowed Bedrock profiles; send to the webhook queue |
-| Webhook Lambda | Read webhook secrets; read the webhook queue. No access to tenant documents or results. |
-| Retention cleaner | Delete under `tenants/*/jobs/*` and `training/*`; no read |
+| Authorizer | `GetItem` on `APIKEY#*` and `TENANT#*` items; read the pepper secret |
+| API Lambda | Assume `tenant-data`; send to the two job queues; create presigned POSTs (through the tenant session) |
+| Worker | Assume `tenant-data`; consume the two job queues; invoke only the three model-ladder `us.` profiles; send to the webhook queue |
+| Intake | Assume `tenant-data`; send to the interactive job queue and the webhook queue |
+| Scan sweeper | Query the `pending` index; assume `tenant-data`; send to the webhook queue |
+| Webhook Lambda | Assume `tenant-data` (to read the tenant's webhook URL and secret id only); consume the webhook queue; read secrets named `slm/<env>/webhook/*` |
+| Retention cleaner | Read the table stream; assume `tenant-data` to delete the expired job's S3 folder |
+
+All roles are defined in `infra/cloudformation/app.yaml`, one per function, named `slm-<env>-fn-<function>`.
 
 ### 6.4 KMS keys
 
 | Key | Encrypts | Key-policy notes |
 |---|---|---|
-| `documents` | S3 objects | Decrypt only through `tenant-data` with a matching encryption context. Break-glass is the only other principal. |
+| `documents` | S3 objects | No service-wide grant in the key policy: only IAM grants count, and only `tenant-data` (through S3) and the GuardDuty scan role have one. Break-glass is the only other principal. With S3 Bucket Key on (the default, ~99% fewer KMS calls), KMS sees the bucket ARN as context, so the per-tenant context condition needs `EnforceTenantEncryptionContext=true`, which turns Bucket Key off. |
 | `table` | DynamoDB table, SQS queues | Used by the DynamoDB and SQS services on behalf of the workload roles |
 | `logs` | CloudWatch Logs, Secrets Manager | Logs service principal plus ops roles |
 
@@ -220,7 +225,7 @@ All keys are customer-managed, with automatic yearly rotation and a 30-day delet
 
 ### 6.5 Secrets (NFR-S9)
 
-Secrets live in Secrets Manager, encrypted with the `logs` key. Lambdas read them at cold start through the Parameters and Secrets extension and cache them for 5 minutes. Secrets are never in environment variables, code, CloudFormation templates or stack parameters: CloudFormation creates the empty secret, and a rotation Lambda or an operator script sets its value.
+Secrets live in Secrets Manager, encrypted with the `logs` key. Lambdas read them with the AWS SDK (`app/core/secrets.py`) and cache them in memory for 5 minutes. Secrets are never in environment variables, code, CloudFormation templates or stack parameters: environment variables hold only the secret's ARN. The API-key pepper's value is generated by Secrets Manager itself (`GenerateSecretString` in `security.yaml`); per-tenant webhook secrets are created by `scripts/create_tenant.py`.
 
 ### 6.6 Rotation
 
@@ -411,7 +416,7 @@ Most controls are free: IAM, SCPs, encryption context, KMS key policies, lifecyc
 | Amazon Inspector ECR scanning (a few images a month) | ~USD 1 a month |
 | CloudTrail data events for the documents bucket and KMS | ~USD 1 a month |
 | Log-archive bucket with Object Lock | < USD 1 a month |
-| **Total extra** | **~USD 10 a month**, already included in the ~USD 80 base case in [cost.md](cost.md) v0.2 |
+| **Total extra** | **~USD 10 a month**, on top of the ~USD 56 base case in [cost.md](cost.md) v0.3 (CloudTrail management events and the security-change alerts are already deployed by the templates at ~USD 0.05) |
 
 ## 15. Open items
 

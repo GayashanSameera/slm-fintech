@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 
+from app.audit import audit
 from app.core.errors import ApiError
 from app.core.logging import get_logger
 from app.modules.chat.api import router as chat_router
@@ -45,6 +46,47 @@ async def unexpected_error_handler(request: Request, exc: Exception):
     log.error("unhandled_error", exc=exc, path=request.url.path)
     return JSONResponse(status_code=500, content={"error": {
         "code": "internal_error", "message": "Something went wrong. Please retry."}})
+
+
+def _route_template(path: str, path_params: dict) -> str:
+    """'/v1/extractions/ext_01J...' + {'job_id': 'ext_01J...'} -> '/v1/extractions/{job_id}'.
+
+    Built from the real path because routers included with a prefix only know their own
+    part of it ('/extractions/{job_id}'). Each path segment that equals a path-parameter
+    value is replaced by the parameter's name.
+    """
+    by_value = {str(v): k for k, v in path_params.items()}
+    return "/".join(f"{{{by_value[s]}}}" if s in by_value else s for s in path.split("/"))
+
+
+@app.middleware("http")
+async def audit_every_request(request: Request, call_next):
+    """One audit record per API request (requirement NFR-S4): who, what, which job, outcome.
+
+    `require_scope` (app/auth/dependencies.py) stores the caller in request.state.principal,
+    and FastAPI's router writes the path parameters into the request scope, which this
+    middleware shares. So after the route has run we know the tenant, the key, the route
+    TEMPLATE ("/v1/extractions/{job_id}", never a raw URL with query strings) and the job
+    id. Only ids and codes are written, never request content.
+
+    Business events (e.g. "extraction.create" with result "ok:dedup") are additionally
+    audited inside service.py; this record is the per-request trail around them.
+    """
+    response = await call_next(request)
+    if request.url.path == "/healthz":
+        return response                       # health checks are not tenant actions
+    principal = getattr(request.state, "principal", None)
+    path_params = request.scope.get("path_params") or {}
+    status = response.status_code
+    audit(
+        tenant_id=principal.tenant_id if principal else None,
+        key_id=principal.key_id if principal else None,
+        action=f"{request.method} {_route_template(request.url.path, path_params)}",
+        resource_id=path_params.get("job_id"),
+        result="ok" if status < 400 else ("denied" if status in (401, 403) else f"error:{status}"),
+        source_ip=request.client.host if request.client else None,
+    )
+    return response
 
 
 @app.get("/healthz", include_in_schema=False)

@@ -24,7 +24,7 @@ from typing import Any
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from app.core.clock import epoch_in, now_iso
+from app.core.clock import epoch_in, epoch_now, now_iso
 from app.storage import keys
 from app.storage.aws import dynamodb_table, tenant_session
 from app.storage.ddb import from_ddb, to_ddb
@@ -36,6 +36,17 @@ FINAL_STATUSES = frozenset({"succeeded", "failed", "expired"})
 # the whole table. The attribute is removed once the job moves on.
 PENDING_GSI = "pending"
 PENDING_PK_VALUE = "PENDING"
+
+
+def _expired(item: dict) -> bool:
+    """True once the tenant's retention period is over (NFR-C5).
+
+    DynamoDB TTL deletes expired items only "usually within a few days", not at the
+    exact second. Until then the item still exists, so EVERY read checks `expires_at`
+    itself: an expired job, result or dedup entry is treated as if already deleted.
+    """
+    exp = item.get("expires_at")
+    return exp is not None and int(exp) <= epoch_now()
 
 
 class JobRepo:
@@ -73,7 +84,7 @@ class JobRepo:
         """Read one job. `consistent=True` guarantees we see the latest write (used by the wait loop)."""
         resp = self.table.get_item(Key={"PK": self.pk, "SK": keys.job_sk(job_id)}, ConsistentRead=consistent)
         item = resp.get("Item")
-        return from_ddb(item) if item else None
+        return from_ddb(item) if item and not _expired(item) else None
 
     def list(self, limit: int = 20, cursor: str | None = None) -> tuple[list[dict], str | None]:
         """Newest jobs first (FR-2.8). Returns (jobs, next_cursor)."""
@@ -85,7 +96,9 @@ class JobRepo:
         if cursor:
             kwargs["ExclusiveStartKey"] = {"PK": self.pk, "SK": keys.job_sk(cursor)}
         resp = self.table.query(**kwargs)
-        items = [from_ddb(i) for i in resp.get("Items", [])]
+        # Expired jobs are dropped (see _expired). A page can then hold fewer than
+        # `limit` items; the cursor still continues correctly from the last key read.
+        items = [from_ddb(i) for i in resp.get("Items", []) if not _expired(i)]
         last = resp.get("LastEvaluatedKey")
         next_cursor = last["SK"].removeprefix("JOB#") if last else None
         return items, next_cursor
@@ -198,7 +211,7 @@ class JobRepo:
     def find_dedup(self, doc_type: str | None, sha256: str) -> str | None:
         """Return the job id that already processed this exact file for this tenant, if any."""
         item = self.table.get_item(Key={"PK": self.pk, "SK": keys.dedup_sk(doc_type, sha256)}).get("Item")
-        return item["job_id"] if item else None
+        return item["job_id"] if item and not _expired(item) else None
 
     def save_dedup(self, doc_type: str | None, sha256: str, job_id: str, expires_at: int) -> None:
         self.table.put_item(Item={

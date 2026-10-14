@@ -1,0 +1,26 @@
+# ------------------------------------------------------------------------------
+# checkov settings for these templates. Run from this folder:  checkov -d .
+#
+# Checks skipped for EVERY Lambda function, because they contradict a design
+# decision (each with the reason). Skips for single resources are written next
+# to the resource instead (Metadata.checkov.skip), so they stay visible there.
+# ------------------------------------------------------------------------------
+framework: cloudformation
+compact: true
+skip-check:
+  # Lambda outside a VPC: deliberate (architecture §8.5). Every AWS service we
+  # call is reached over TLS + SigV4; the interface endpoints a VPC would need
+  # cost ~USD 60-70/month, about the whole running cost of the platform.
+  - CKV_AWS_117
+  # Lambda "async invocation" DLQ: only async invokes use it. Our SQS-driven
+  # functions have DLQs on the queues; the EventBridge rule targets retry for an
+  # hour; the scan-sweeper re-runs every 5 minutes and is idempotent.
+  - CKV_AWS_116
+  # Reserved concurrency: we cap concurrency per queue with the SQS trigger's
+  # MaximumConcurrency instead. Reserved concurrency would carve capacity out of
+  # the account pool (new accounts can start with only 10).
+  - CKV_AWS_115
+  # Customer-managed KMS key for environment variables: they hold only resource
+  # names and ARNs, never secrets (secrets are in Secrets Manager, NFR-S9).
+  # Lambda encrypts them at rest with an AWS-managed key anyway.
+  - CKV_AWS_173

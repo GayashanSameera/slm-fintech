@@ -1,0 +1,27 @@
+{
+  "_comment": "Parameter values for the DEV environment, one block per stack. Read by scripts/deploy.sh. Never put secrets here.",
+  "data": {
+    "Env": "dev",
+    "EnforceTenantEncryptionContext": "false"
+  },
+  "security": {
+    "Env": "dev",
+    "EnforceTenantEncryptionContext": "false",
+    "CreateTrail": "true"
+  },
+  "app": {
+    "Env": "dev",
+    "ApiIntegrationTimeoutMs": "29000",
+    "MaxWaitSeconds": "25",
+    "InteractiveMaxConcurrency": "5",
+    "BackgroundMaxConcurrency": "2",
+    "ProcessingWindow": "always",
+    "LogLevel": "INFO",
+    "EnableWaf": "false"
+  },
+  "observability": {
+    "Env": "dev",
+    "AlertEmail": "CHANGE-ME@example.com",
+    "MonthlyBudgetUsd": "50"
+  }
+}
