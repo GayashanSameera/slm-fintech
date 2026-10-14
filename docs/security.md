@@ -220,7 +220,7 @@ All keys are customer-managed, with automatic yearly rotation and a 30-day delet
 
 ### 6.5 Secrets (NFR-S9)
 
-Secrets live in Secrets Manager, encrypted with the `logs` key. Lambdas read them at cold start through the Parameters and Secrets extension and cache them for 5 minutes. Secrets are never in environment variables, code or Terraform state: Terraform creates the secret, and a rotation Lambda or an operator script sets its value.
+Secrets live in Secrets Manager, encrypted with the `logs` key. Lambdas read them at cold start through the Parameters and Secrets extension and cache them for 5 minutes. Secrets are never in environment variables, code, CloudFormation templates or stack parameters: CloudFormation creates the empty secret, and a rotation Lambda or an operator script sets its value.
 
 ### 6.6 Rotation
 
@@ -346,7 +346,7 @@ All application code runs on AWS Lambda (architecture §4.2). This removes a who
   - scanned with Amazon Inspector ECR scanning;
   - images with a Critical vulnerability are not deployed;
   - images are immutable tags signed with AWS Signer, and Lambda code-signing is enforced.
-- **Infrastructure as code:** Terraform plans are scanned with `checkov`. Changes to IAM, KMS, bucket policy or the SCP need a second reviewer.
+- **Infrastructure as code:** CloudFormation templates are checked with `cfn-lint` and scanned with `checkov`; every deploy goes through a change set that is reviewed before it is executed. Changes to IAM, KMS, bucket policy or the SCP need a second reviewer.
 - **Secrets in the repository:** pre-commit `gitleaks` hook and GitHub secret scanning.
 - **Test data:** synthetic documents only outside prod. Copying prod data to other environments is denied by SCP and by the bucket policy.
 

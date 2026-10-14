@@ -217,7 +217,7 @@ Bedrock uses normal **AWS IAM**:
 - **You, on your laptop** sign in with `aws sso login` (IAM Identity Center) to the **dev** account. Your temporary credentials are picked up by `boto3` automatically.
 - **Bedrock API keys** (a newer, simpler bearer token) exist, but **we do not use them**. They are long-lived secrets that can leak. Our SCP blocks them ([security.md](security.md) §5.2).
 
-A minimal IAM policy to call Haiku 5.5 through the US profile (Terraform writes the real one):
+A minimal IAM policy to call Haiku 5.5 through the US profile (the CloudFormation `app.yaml` stack writes the real one):
 
 ```json
 {

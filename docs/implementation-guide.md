@@ -29,7 +29,7 @@ This guide explains **how to build** the platform, in the order we build it. Eac
 | [uv](https://docs.astral.sh/uv/) | latest | Python packages and virtual environment |
 | Docker + Docker Compose | recent | Local AWS stand-ins and the local model |
 | AWS CLI | v2 | Talking to the dev AWS account |
-| Terraform | 1.9+ | Infrastructure (milestone 4) |
+| AWS CLI v2 + cfn-lint | latest | Infrastructure as CloudFormation (milestone 4) |
 | git, pre-commit | recent | Version control, commit hooks |
 
 Your laptop does **not** need a GPU. Locally, the AI model runs on CPU through Ollama. It is slow and less accurate, but enough to test the code paths.
@@ -82,7 +82,7 @@ flowchart LR
 | M1 | Core library: config, IDs, errors, logging, storage, schemas, preprocessing, model gateway, extraction pipeline, Rung 0 parsers | §4 |
 | M2 | API, worker, intake, webhooks (runs fully locally) | §5 |
 | M3 | Tests: unit, integration, isolation, log-leak; evaluation runner | §6 |
-| M4 | AWS infrastructure with Terraform, CI/CD | §7 |
+| M4 | AWS infrastructure with CloudFormation, CI/CD | §7 |
 | M5 | Hardening and go-live checks | §8 |
 
 ---
@@ -125,7 +125,7 @@ slm-fintech/
 │   ├── webhooks.py
 │   ├── usage.py
 │   └── audit.py
-├── infra/terraform/             # milestone 4
+├── infra/cloudformation/        # milestone 4
 ├── eval/                        # evaluation runner + labelled-set manifest
 ├── tests/
 │   ├── fixtures/                # SYNTHETIC documents only
@@ -1322,24 +1322,30 @@ Real labelled documents (from the client, anonymised) are stored only in the dev
 
 ---
 
-## 7. M4: AWS infrastructure (Terraform)
+## 7. M4: AWS infrastructure (CloudFormation)
 
-### 7.1 Module layout
+We use **plain AWS CloudFormation**: YAML templates deployed with the AWS CLI. No Terraform, no SAM, no Serverless Framework. We only run on AWS, so we don't need a multi-cloud tool, and CloudFormation stores what is deployed for us, so there is no state bucket to run.
+
+### 7.1 Stack layout
 
 ```
-infra/terraform/
-├── modules/
-│   ├── data/            # DynamoDB table (PITR, TTL, stream), S3 bucket (KMS, lifecycle, BPA), KMS keys
-│   ├── api/             # API Gateway REST API, WAF, authorizer + API Lambda, usage plans
-│   ├── processing/      # SQS queues + DLQ, worker Lambda (ECR image), event source mappings
-│   ├── intake/          # EventBridge rules (S3 Object Created, GuardDuty result), intake Lambda,
-│   │                    #   GuardDuty Malware Protection plan for the bucket
-│   ├── security/        # tenant-data role (ABAC), workload roles, Config rules, alarms
-│   └── observability/   # dashboard, alarms, budgets, log groups (KMS, retention)
-└── envs/
-    ├── dev/main.tf      # wires modules together with dev values
-    └── prod/main.tf
+infra/cloudformation/
+├── data.yaml            # DynamoDB table (PITR, TTL, stream), S3 bucket (KMS, lifecycle, BPA), KMS keys
+├── security.yaml        # tenant-data role (ABAC), Lambda execution roles, Config rules, Secrets Manager secrets (empty)
+├── app.yaml             # API Gateway REST API (OpenAPI body) + WAF + usage plans; the 7 Lambda functions
+│                        #   (one ECR image); SQS queues + DLQs and event source mappings; EventBridge rules
+│                        #   and Scheduler; GuardDuty Malware Protection plan for the bucket
+├── observability.yaml   # dashboard, alarms, budgets, log groups (KMS, retention)
+└── params/
+    ├── dev.json         # parameter values per environment
+    └── prod.json
 ```
+
+Stacks pass values to each other with `Outputs` + `Export` and `Fn::ImportValue` (for example `data` exports the table name and bucket ARN, and `app` imports them). An export can't change while another stack imports it, so export only stable names and ARNs.
+
+Plain CloudFormation is more verbose than the frameworks for two things. Keep them tidy like this:
+- **API Gateway:** define the REST API with an OpenAPI document in the `AWS::ApiGateway::RestApi` `Body`, not one CloudFormation resource per route and method.
+- **Lambda:** every function is an `AWS::Lambda::Function` with `PackageType: Image` and its own `ImageConfig.Command` (see 7.3), plus one `AWS::Lambda::EventSourceMapping` or permission per trigger.
 
 Organisation-level controls (SCPs for region and Bedrock, the log-archive account) live in a separate `org/` stack, owned by the platform lead.
 
@@ -1359,7 +1365,7 @@ Organisation-level controls (SCPs for region and Bedrock, the log-archive accoun
 
 ### 7.3 The Lambda functions
 
-Everything runs on Lambda (requirements NFR-O5). Terraform creates these functions; the table in architecture §4.2 has the full settings.
+Everything runs on Lambda (requirements NFR-O5). `app.yaml` creates these functions; the table in architecture §4.2 has the full settings.
 
 | Function | Code entry point | Trigger |
 |---|---|---|
@@ -1371,18 +1377,17 @@ Everything runs on Lambda (requirements NFR-O5). Terraform creates these functio
 | `retention-cleaner` | `app.retention.handle_stream` | DynamoDB stream (TTL deletes) |
 | `scan-sweeper` | `app.intake.sweep` | EventBridge Scheduler (every 5 min) |
 
-`api` and `worker` share one container image: pypdfium2, pdfplumber and Pillow need native libraries, and an image is the easiest way to ship them. The small functions are zip packages. Build images for **arm64** and set `architectures = ["arm64"]` on every function; Graviton costs less.
+All seven functions use **one container image** (pypdfium2, pdfplumber and Pillow need native libraries, and an image is the easiest way to ship them). Each function picks its entry point with `ImageConfig.Command`, using the names listed in `app/lambda_handlers.py`. One image means one build and one scan per release. Build the image for **arm64** and set `Architectures: [arm64]` on every function; Graviton costs less.
 
 ### 7.4 Deploying
 
-- **CI/CD:** GitHub Actions authenticates to AWS through **OIDC**, so there are no stored AWS keys. On merge to `main`, it deploys to dev: build and push the image, then `terraform apply`. Prod deploys need a manual approval.
+- **CI/CD:** GitHub Actions authenticates to AWS through **OIDC**, so there are no stored AWS keys. On merge to `main`, it deploys to dev: build and push the image, run `cfn-lint` and `checkov`, then for each stack create a **change set** (`aws cloudformation deploy --no-execute-changeset ...`), print it for review, and execute it. Prod deploys need a manual approval of the change sets.
 - **Order for a fresh environment:**
   1. `data`
   2. `security`
-  3. `processing`
-  4. `intake`
-  5. `api`
-  6. `observability`
+  3. push the container image to ECR (`app` needs the image to exist)
+  4. `app`
+  5. `observability`
 
   Then run the Bedrock retention bootstrap script and create the first tenant with `scripts/create_tenant.py --env dev`.
 

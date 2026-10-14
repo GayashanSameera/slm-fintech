@@ -1,6 +1,6 @@
 // Print proposal.html to PDF with headless Chrome (puppeteer from the mermaid-cli install).
 const path = require('path');
-const puppeteer = require('puppeteer')  // npm i puppeteer@23.11.1;
+const puppeteer = require('puppeteer');  // npm i puppeteer@23.11.1
 (async () => {
   const [, , input, output] = process.argv;
   const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });

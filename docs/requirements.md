@@ -235,7 +235,7 @@ Legal counsel must confirm NFR-C1 to NFR-C5 before the pilot, including whether 
 |---|---|
 | NFR-O1 | The whole system runs locally with one command (`docker compose up`) and no AWS account. |
 | NFR-O2 | The same code runs locally and in AWS; only configuration differs. |
-| NFR-O3 | All AWS infrastructure is defined as code (Terraform). |
+| NFR-O3 | All AWS infrastructure is defined as code (AWS CloudFormation). |
 | NFR-O4 | Dashboards show queue depth, job failures, dead-letter count, Rung 0 parser health, escalation rate, Lambda errors and cost. |
 | NFR-O5 | All application code runs on AWS Lambda. No servers or containers run continuously. |
 

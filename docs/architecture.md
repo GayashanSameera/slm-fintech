@@ -155,7 +155,7 @@ That makes them ideal for deterministic Python parsing. **Rung 0** sits below th
 
 Latency from India is about 0.2–0.3 s per round trip, which is negligible next to model time.
 
-If tenants prefer the EU, everything moves to **eu-central-1** with the `eu.` profile. Only Terraform variables and the model profile change. Use the **global** profile (`global.`) only if no tenant cares where inference runs: it can route to any commercial region, and it may be slightly cheaper.
+If tenants prefer the EU, everything moves to **eu-central-1** with the `eu.` profile. Only the CloudFormation stack parameters and the model profile change. Use the **global** profile (`global.`) only if no tenant cares where inference runs: it can route to any commercial region, and it may be slightly cheaper.
 
 ### 3.5 How the geography rule is enforced
 
@@ -235,7 +235,7 @@ flowchart LR
 How to read it:
 
 - **Solid arrows** are the normal path. The **thick arrow** is the file upload in the presigned flow; it goes straight from the tenant to S3 and never passes through our API. **Dotted arrows** are replies and failure paths.
-- The **API (②)** and the **Worker (⑤)** are the only two places our own business logic runs. Everything else is managed AWS services configured by Terraform.
+- The **API (②)** and the **Worker (⑤)** are the only two places our own business logic runs. Everything else is managed AWS services configured by CloudFormation.
 - **Not drawn, to keep the picture readable:** KMS keys, Secrets Manager, CloudWatch and CloudTrail. Every component uses them (§4.2). The authorizer and the intake Lambda also read and write DynamoDB.
 - The tenant never talks to Bedrock, the queues or DynamoDB directly. It talks only to the API, and to S3 through a one-time upload URL.
 
@@ -258,7 +258,7 @@ How to read it:
 | Secrets | Secrets Manager | API-key pepper, per-tenant webhook secrets (NFR-S9). |
 | Audit | CloudWatch Logs `audit` group (KMS, 180-day retention) + CloudTrail | NFR-S4, NFR-C4 |
 | Ops | CloudWatch dashboard and alarms, AWS Budgets | NFR-O4, NFR-K3 |
-| IaC | Terraform | NFR-O3 |
+| IaC | AWS CloudFormation; AWS-only, no state backend to run | NFR-O3 |
 
 #### Where the code runs: everything on AWS Lambda (NFR-O5)
 
@@ -1290,7 +1290,7 @@ app/
       profiles/              model profiles (YAML)
     chat/api.py              501 stubs (FR-8)
   audit.py  usage.py  webhooks.py
-infra/terraform/             modules: api, worker, data, security, observability; envs/dev, envs/prod
+infra/cloudformation/        stacks: data, security, app, observability; params/dev.json, params/prod.json
 eval/                        labelled-set manifest + runner
 tests/                       unit, contract (OpenAPI), e2e (local and AWS), tenant isolation
 docker-compose.yml
@@ -1302,7 +1302,7 @@ docker-compose.yml
 |---|---|---|
 | 0. Spike (1 week) | Call Nova Lite, Haiku 5.5 and Sonnet 5.5 through the `us.` profiles. Run the samples on every rung to set the first `start_rung` values. Confirm prompt caching, thinking off and quotas. Run 10 samples per document type. List which banks' statements appear most often, and how many are digital. Measure GuardDuty scan time. | Measured tokens per page, latency, retry and escalation rates, first accuracy figures. Cost estimate updated. |
 | 1. Core | Pipeline, schemas, checks, masking, model gateway, local compose with fake and Ollama adapters. Rung 0 framework (fingerprint, verifier) and the first bank parser. | Local end-to-end test passes, including one bank on Rung 0. |
-| 2. Platform | Terraform for API Gateway, authorizer, Lambdas, SQS, DynamoDB, S3, KMS, SCP and the tenant IAM role. Wait loop, presigned uploads, webhooks, dedup, usage. | AWS end-to-end test passes. Isolation test passes with IAM enforcement on. |
+| 2. Platform | CloudFormation for API Gateway, authorizer, Lambdas, SQS, DynamoDB, S3, KMS, SCP and the tenant IAM role. Wait loop, presigned uploads, webhooks, dedup, usage. | AWS end-to-end test passes. Isolation test passes with IAM enforcement on. |
 | 3. Accuracy | Labelled set, evaluation gate, prompt and few-shot tuning, model choice per type. Rung 0 parsers for the top 5–8 banks in the samples. | Targets agreed and met (NFR-A2); Rung 0 coverage and disagreement rate measured. |
 | 4. Hardening | GuardDuty, WAF, dashboards, alarms, budgets, retention cleanup, security review. | Acceptance criteria 1–6. |
 
