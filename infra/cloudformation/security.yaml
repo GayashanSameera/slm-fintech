@@ -366,7 +366,7 @@ Resources:
       Code:
         ZipFile: |
           import json, urllib.request, urllib.error
-          import boto3, cfnresponse
+          import boto3
           from botocore.auth import SigV4Auth
           from botocore.awsrequest import AWSRequest
 
@@ -382,6 +382,18 @@ Resources:
               except urllib.error.HTTPError as e:
                   raise RuntimeError(f"{method} {region}: HTTP {e.code}") from None
 
+          def reply(event, context, status, reason=""):
+              """Tell CloudFormation the result: a PUT of a small JSON document to the pre-signed
+              ResponseURL. (Written out here because the 'cfnresponse' helper module is NOT
+              available to inline Python code on this runtime: deploying with it hung for an hour.)"""
+              body = json.dumps({"Status": status, "Reason": reason or f"See log stream {context.log_stream_name}",
+                                 "PhysicalResourceId": "bedrock-retention-none", "StackId": event["StackId"],
+                                 "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"],
+                                 "Data": {}}).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT",
+                                           headers={"Content-Type": "", "Content-Length": str(len(body))})
+              urllib.request.urlopen(req, timeout=20).read()
+
           def handler(event, context):
               """Create/Update: set mode none in every Region and verify. Delete: do nothing."""
               try:
@@ -392,16 +404,19 @@ Resources:
                           if got != "none":
                               raise RuntimeError(f"{region} reports mode {got}, expected none")
                           print(json.dumps({"event": "retention_locked", "region": region, "mode": got}))
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "retention-lock")
+                  reply(event, context, "SUCCESS")
               except Exception as exc:    # fail the stack loudly: never ship an environment that retains data
                   print(json.dumps({"event": "retention_lock_failed", "exc_type": type(exc).__name__, "detail": str(exc)}))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, "retention-lock")
+                  reply(event, context, "FAILED", f"{type(exc).__name__}: {exc}"[:200])
       LoggingConfig: { LogGroup: !Ref RetentionLockLogs }
 
   BedrockRetentionNone:
     Type: Custom::BedrockDataRetention
     Properties:
       ServiceToken: !GetAtt RetentionLockFunction.Arn
+      # Give up after 5 minutes instead of CloudFormation's default of one hour if the function
+      # never answers (it should answer within seconds).
+      ServiceTimeout: 300
       Mode: none
       Regions: [us-east-1, us-east-2, us-west-2]
 
