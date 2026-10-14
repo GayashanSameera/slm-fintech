@@ -145,7 +145,13 @@ def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> li
         # Every other type: each value must be printed in the text (grounding.py).
         return grounding_failure(ungrounded_fields(parsed.model_dump(mode="json"), [p["text"] for p in pages]))
     issues = reconcile(parsed, [p["text"] for p in pages])
-    return _reconciliation_failure(issues)
+    header = [i for i in issues if i.startswith("header_")]
+    out = _reconciliation_failure([i for i in issues if not i.startswith("header_")])
+    if header:
+        # Header fields not found in the text: a warning naming the field, never a reason to climb.
+        out.append(CheckFailure("header_not_in_text", "Header fields not found in the text.",
+                                fields=tuple(i.removeprefix("header_") for i in header)))
+    return out
 
 
 def grounding_failure(paths: list[str]) -> list[CheckFailure]:
@@ -252,8 +258,9 @@ def second_read(doc_type: str, pages: list[dict], parsed, model_id: str, profile
     return cross_read(
         doc_type=doc_type, pages=pages, parsed=parsed, model_id=model_id, gateway=gateway,
         readers=list(profile.crossread_readers), arbiters=list(profile.crossread_arbiters), extra_check=check,
-        ignore=((STATEMENT_PROVEN_FIELDS if first_chunk else STATEMENT_PROVEN_FIELDS | STATEMENT_HEADER_FIELDS)
-                if doc_type == "bank_statement" else frozenset()),
+        # Statements: compare transactions only (amounts are proven by the balance chain; header
+        # fields are not worth an arbitration, owner decision 2026-10-15).
+        ignore=(STATEMENT_PROVEN_FIELDS | STATEMENT_HEADER_FIELDS if doc_type == "bank_statement" else frozenset()),
         # A scanned statement page is re-read by the profile's scan reader on an enhanced picture.
         reader_model=profile.scan_reader if scanned_statement else None,
         reader_pages=enhanced_pages(pages) if scanned_statement else None)
@@ -450,7 +457,7 @@ def extract_document(*, data: bytes, prepared, requested_type: str | None, tenan
                           unmasked_kinds=set(tenant.unmasked_kinds))
             return ExtractionOutcome(
                 doc_type="bank_statement", doc_type_source="parser", doc_type_confidence=1.0,
-                result=result, warnings=[], method="parser", model_id=None,
+                result=result, warnings=outcome.warnings, method="parser", model_id=None,
                 parser_id=outcome.parser_id, verified_by=outcome.verified_by,
                 schema_version=REGISTRY["bank_statement"].version, calls=calls,
             )

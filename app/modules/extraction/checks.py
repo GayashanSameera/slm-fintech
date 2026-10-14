@@ -316,7 +316,11 @@ _CHECKS = {
 # Re-extracting with a stronger model would not change them, so they never
 # trigger a climb; they are only reported as warnings.
 DOCUMENT_ONLY = {"document_expired", "required_fields_missing", "running_balance_not_printed",
-                 "line_item_amount_mismatch", "pan_name_mismatch"}
+                 "line_item_amount_mismatch", "pan_name_mismatch",
+                 # Bank statement HEADER problems (owner decision 2026-10-15: transactions are what
+                 # matters; a wrong header is cheap to re-run). Reported, never worth a stronger model.
+                 # Transaction dates stay protected by dates_out_of_order.
+                 "ifsc_format", "date_outside_period", "header_not_in_text"}
 
 
 def run_checks(doc_type: str, parsed) -> list[CheckFailure]:

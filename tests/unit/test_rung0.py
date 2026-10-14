@@ -71,10 +71,21 @@ def test_checks_only_tenant_never_calls_a_model():
     assert gw.calls == []
 
 
-def test_verifier_disagreement_falls_back_to_haiku():
+def test_header_disagreement_is_a_warning_not_a_rejection():
+    # Owner decision 2026-10-15: transactions are what matters. A different account holder is
+    # reported, and the (row-proven) parser result is kept: no expensive AI extraction.
     rows = sample_transactions(5)
-    # The model reads a different account holder than the parser: reject the parser result.
-    gw = FakeGateway().queue(demo_reading(rows, holder="Someone Else"), _ai_statement(rows))
+    gw = FakeGateway().queue(demo_reading(rows, holder="Someone Else"))
+    out = _run(demo_statement(rows), gw)
+    assert out.method == "parser" and [c["model_id"] for c in gw.calls] == [NOVA]
+    assert out.warnings == ["header_unverified:account_holder"]
+
+
+def test_transaction_disagreement_falls_back_to_haiku():
+    rows = sample_transactions(5)
+    reading = json.loads(demo_reading(rows))
+    reading["first_transaction"]["description"] = "SOMETHING ELSE ENTIRELY"
+    gw = FakeGateway().queue(json.dumps(reading), _ai_statement(rows))
     out = _run(demo_statement(rows), gw)
     assert out.method == "ai"
     # Nova has already seen the document as verifier, so the ladder starts at Haiku.
@@ -153,10 +164,10 @@ def test_reading_in_other_formats_still_matches():
     assert v.agree is True and v.issue_paths == []
 
 
-def test_wrong_account_number_rejects():
+def test_wrong_account_number_is_reported_not_rejected():
     rows, *_ = _statement()
     v, *_ = _verify(demo_reading(rows, account="999988887777"))
-    assert v.agree is False and v.issue_paths == ["account_number"]
+    assert v.agree is True and v.header_issues == ["account_number"]
 
 
 def test_unreadable_required_field_rejects():
@@ -164,7 +175,7 @@ def test_unreadable_required_field_rejects():
     answer = json.loads(demo_reading(rows))
     answer["account_number"] = None                                    # the model couldn't find it
     v, *_ = _verify(json.dumps(answer))
-    assert v.agree is False and v.issue_paths == ["account_number"]
+    assert v.agree is True and v.header_issues == ["account_number"]   # header: reported only
 
 
 def test_optional_field_not_printed_is_not_a_mismatch():
@@ -176,12 +187,20 @@ def test_optional_field_not_printed_is_not_a_mismatch():
     assert v.agree is True
 
 
-def test_optional_field_read_differently_rejects():
+def test_header_field_read_differently_is_reported():
     rows, *_ = _statement()
     answer = json.loads(demo_reading(rows))
     answer["account_holder"] = "SOMEONE ELSE"
     v, *_ = _verify(json.dumps(answer))
-    assert v.agree is False and v.issue_paths == ["account_holder"]
+    assert v.agree is True and v.header_issues == ["account_holder"]
+
+
+def test_last_transaction_read_differently_rejects():
+    rows, *_ = _statement()
+    answer = json.loads(demo_reading(rows))
+    answer["last_transaction"]["date"] = "2026-01-01"
+    v, *_ = _verify(json.dumps(answer))
+    assert v.agree is False and v.issue_paths == ["last_transaction.date"]
 
 
 def test_dates_without_a_year_take_the_statement_year():

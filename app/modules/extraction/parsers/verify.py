@@ -59,11 +59,19 @@ OPTIONAL = ("account_holder", "ifsc", "branch", "first_transaction.date", "first
 LENIENT = ("account_holder", "branch", "first_transaction.description", "last_transaction.description")
 
 
+# Header fields: who/which account/which period. Owner decision (2026-10-15): the platform's job is the
+# TRANSACTIONS; a wrong header field is cheap to fix by running the document again, so a header
+# disagreement is REPORTED as a warning instead of rejecting the parser result (which would send the
+# whole statement to the far more expensive AI ladder). Disagreement on the first/last ROW still rejects.
+HEADER_PATHS = ("account_number", "period_from", "period_to", "account_holder", "ifsc", "branch")
+
+
 @dataclass
 class VerifyResult:
-    agree: bool
+    agree: bool                                  # True when nothing about the TRANSACTIONS is disputed
     issue_paths: list[str] = field(default_factory=list)
     gateway_result: GatewayResult | None = None
+    header_issues: list[str] = field(default_factory=list)   # disputed header fields (warnings only)
 
 
 def parser_view(statement) -> dict:
@@ -146,6 +154,8 @@ def verify(pages: list[dict], statement, gateway: ModelGateway, model_id: str) -
         paths = compare(reading, parser_view(statement))
     except (json.JSONDecodeError, TypeError):
         paths = ["_verifier_unreadable"]
-    agree = not paths
+    header = [p for p in paths if p in HEADER_PATHS]
+    rows = [p for p in paths if p not in HEADER_PATHS]        # includes "_verifier_unreadable": rejects
+    agree = not rows
     log.info("rung0_verified", agree=agree, issue_count=len(paths), issue_paths=paths[:10], model_id=model_id)
-    return VerifyResult(agree=agree, issue_paths=paths, gateway_result=res)
+    return VerifyResult(agree=agree, issue_paths=rows, gateway_result=res, header_issues=header)

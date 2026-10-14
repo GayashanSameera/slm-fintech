@@ -31,6 +31,9 @@ from .verify import verify
 
 log = get_logger(__name__)
 
+# Check codes about the statement HEADER, not its transactions: reported as warnings.
+HEADER_WARNING_CODES = {"ifsc_format", "date_outside_period"}
+
 
 @dataclass
 class Rung0Outcome:
@@ -38,6 +41,7 @@ class Rung0Outcome:
     parser_id: str
     verified_by: str | None                      # model id, or None for checks_only
     usage: list[GatewayResult] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)   # header problems: reported, never rejecting
 
 
 def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: str,
@@ -69,12 +73,15 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
         log.error("rung0_parser_error", exc=exc, job_id=job_id, parser_id=parser.parser_id)
         return None, calls, True
 
-    failed = [f.code for f in run_checks("bank_statement", statement)]
     page_texts = [p["text"] for p in prepared.pages]
-    failed += coverage_problems(statement, page_texts)
     # Statement rows are reconciled with real transactions downstream: EVERY row must
     # match the document's own text, field by field, before anything else is trusted.
-    failed += reconcile(statement, page_texts)
+    found = ([f.code for f in run_checks("bank_statement", statement)]
+             + coverage_problems(statement, page_texts) + reconcile(statement, page_texts))
+    # Header problems (IFSC shape, a header field not found in the text, a row outside the printed
+    # period) are WARNINGS: the transactions are what matters, and a header is cheap to re-run.
+    warnings = sorted({c for c in found if c in HEADER_WARNING_CODES or c.startswith("header_")})
+    failed = [c for c in found if c not in warnings]
     if failed:
         log.info("rung0_rejected", job_id=job_id, parser_id=parser.parser_id,
                  error_code="checks_failed", checks_failed=failed)
@@ -82,7 +89,7 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
 
     if verification_mode == "checks_only":
         # Tenant chose: these documents never go to any AI service (FR-9.4).
-        return Rung0Outcome(statement, parser.parser_id, verified_by=None), calls, True
+        return Rung0Outcome(statement, parser.parser_id, verified_by=None, warnings=warnings), calls, True
 
     v = verify(prepared.pages, statement, gateway, verifier_model)
     if v.gateway_result:
@@ -91,4 +98,5 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
         log.info("rung0_rejected", job_id=job_id, parser_id=parser.parser_id,
                  error_code="verifier_disagreed", issue_count=len(v.issue_paths))
         return None, calls, True
-    return Rung0Outcome(statement, parser.parser_id, verified_by=verifier_model), calls, True
+    warnings = sorted(set(warnings) | {f"header_unverified:{p}" for p in v.header_issues})
+    return Rung0Outcome(statement, parser.parser_id, verified_by=verifier_model, warnings=warnings), calls, True
