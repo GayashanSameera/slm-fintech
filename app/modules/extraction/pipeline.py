@@ -14,6 +14,7 @@ This is the heart of the platform. It follows the walkthrough in architecture
       attempt 1 -> parse JSON -> schema -> consistency checks -> pass? done
       attempt 2 (stronger model or same model with thinking) -> ...
       attempt 3 -> ... -> keep the best result + warnings
+      (a LONG bank statement: the same, per chunk of 3 pages, chunks in parallel, then merged)
                     ▼
     normalise (nulls for missing fields) -> MASK -> return
 
@@ -24,6 +25,7 @@ the pipeline easy to unit-test with the FakeGateway.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ValidationError
@@ -37,7 +39,7 @@ from .classify import classify
 from .masking import has_aadhaar_markers, mask
 from .normalise import to_result
 from .parsers import try_rung0
-from .parsers.reconcile import reconcile
+from .parsers.reconcile import reconcile, reconcile_rows
 from .profiles import Profile
 from .prompts import instruction, strip_code_fences, system_prompt
 from .schemas import REGISTRY
@@ -96,7 +98,10 @@ def attempt_plan(profile: Profile, start: int) -> list[tuple[int, bool]]:
 def parse_and_validate(res: GatewayResult, model: type[BaseModel]) -> tuple[BaseModel | None, list[str]]:
     """Gates 1 and 2: valid JSON, valid schema. Returns (parsed, problems for the next attempt)."""
     if res.stop_reason == "max_tokens":
-        return None, ["The answer was cut off. Return a shorter but complete JSON object."]
+        # Never ask for a "shorter" answer: for a statement that means dropping rows. Long
+        # statements are read in chunks (run_chunked_statement), so this should not happen.
+        return None, ["The answer was cut off before it was complete. Return the COMPLETE JSON object: "
+                      "every field and every row, nothing left out, no extra spaces."]
     try:
         raw = json.loads(strip_code_fences(res.text))
         if not isinstance(raw, dict):
@@ -109,6 +114,11 @@ def parse_and_validate(res: GatewayResult, model: type[BaseModel]) -> tuple[Base
         return None, [f"Field '{'.'.join(map(str, err['loc']))}': {err['type']}" for err in e.errors()[:10]]
 
 
+def _digital(pages: list[dict]) -> bool:
+    """True if every page has a text layer (only then can rows be reconciled with the text)."""
+    return bool(pages) and not any(p.get("scanned") or not p.get("text") for p in pages)
+
+
 def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> list[CheckFailure]:
     """Digital bank statements read by AI must ALSO match the PDF text, row by row (reconcile.py).
 
@@ -116,9 +126,13 @@ def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> li
     the top, the codes are returned as warnings. Messages name rows and fields only.
     Scanned pages have no text layer, so nothing can be reconciled for them.
     """
-    if doc_type != "bank_statement" or not pages or any(p.get("scanned") or not p.get("text") for p in pages):
+    if doc_type != "bank_statement" or not _digital(pages):
         return []
     issues = reconcile(parsed, [p["text"] for p in pages])
+    return _reconciliation_failure(issues)
+
+
+def _reconciliation_failure(issues: list[str]) -> list[CheckFailure]:
     if not issues:
         return []
     return [CheckFailure("text_reconciliation_failed",
@@ -126,12 +140,13 @@ def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> li
                          + ". Copy every row exactly as printed, in order.")]
 
 
-def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway,
-               start_rung: int | None = None) -> tuple[BaseModel, list[CheckFailure], str, list[GatewayResult]]:
-    """Gate 3 and climbing. Returns (best parsed result, its failures, model id, calls)."""
+def _climb(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway, start: int,
+           check, chunk: tuple[int, int, int] | None = None):
+    """The ladder for one set of pages: attempt after attempt (attempt_plan) until an answer is
+    valid and `check(parsed)` finds nothing blocking. Returns (best parsed result, its
+    failures, model id, calls); raises extraction_failed if no attempt gave a usable answer."""
     spec = REGISTRY[doc_type]
     system = system_prompt(spec)
-    start = profile.start_rung.get(doc_type, 1) if start_rung is None else start_rung
     calls: list[GatewayResult] = []
     best: tuple[BaseModel, list[CheckFailure], str] | None = None
     problems: list[str] = []
@@ -139,18 +154,19 @@ def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: Mode
     for attempt, (rung, thinking) in enumerate(attempt_plan(profile, start), start=1):
         model_id = profile.ladder[rung].model
         res = gateway.generate(model_id=model_id, system=system, pages=pages,
-                               instruction=instruction(problems), thinking=thinking)
+                               instruction=instruction(problems, chunk), thinking=thinking)
         calls.append(res)
         parsed, problems = parse_and_validate(res, spec.model)
+        where = {"chunk_first_page": chunk[0]} if chunk else {}
         if parsed is None:
-            log.info("ladder_attempt", rung=rung, attempt=attempt, model_id=model_id, status="invalid")
+            log.info("ladder_attempt", rung=rung, attempt=attempt, model_id=model_id, status="invalid", **where)
             continue
-        failures = run_checks(doc_type, parsed) + text_reconciliation_failures(doc_type, parsed, pages)
+        failures = check(parsed)
         blocking = [f for f in failures if f.code not in DOCUMENT_ONLY]
         if best is None or len(failures) < len(best[1]):
             best = (parsed, failures, model_id)
         log.info("ladder_attempt", rung=rung, attempt=attempt, model_id=model_id,
-                 status="ok" if not blocking else "checks_failed", checks_failed=[f.code for f in blocking])
+                 status="ok" if not blocking else "checks_failed", checks_failed=[f.code for f in blocking], **where)
         if not blocking:
             break                               # passed: stop climbing
         problems = [f.message for f in blocking]   # tell the next attempt what was wrong
@@ -160,6 +176,102 @@ def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: Mode
         err.calls = calls
         raise err
     return best[0], best[1], best[2], calls
+
+
+def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway,
+               start_rung: int | None = None) -> tuple[BaseModel, list[CheckFailure], str, list[GatewayResult]]:
+    """Gate 3 and climbing. Returns (best parsed result, its failures, model id, calls)."""
+    start = profile.start_rung.get(doc_type, 1) if start_rung is None else start_rung
+    if doc_type == "bank_statement" and len(pages) > profile.statement_chunk_pages:
+        return run_chunked_statement(pages, profile, gateway, start)
+    return _climb(doc_type, pages, profile, gateway, start,
+                  check=lambda parsed: run_checks(doc_type, parsed)
+                  + text_reconciliation_failures(doc_type, parsed, pages))
+
+
+# --- long bank statements: chunks ------------------------------------------------------------
+
+def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGateway, start: int):
+    """A long bank statement, read a few pages at a time.
+
+    WHY: one model answer has an output limit (8000 tokens, roughly 120 rows). A 15-page
+    statement with ~190 rows does not fit: the answer is cut off, and a model asked to "be
+    shorter" leaves rows out (seen in production on 2026-10-14). Chunks of 3 pages are far
+    below the limit, they are read IN PARALLEL (so a long statement takes about as long as a
+    short one), and a chunk that fails its checks climbs the ladder ALONE: one bad chunk
+    doesn't cost a second reading of the whole statement.
+
+    Each chunk is checked on its own pages: schema, the running balance from row to row, and
+    (digital PDFs) its rows against the text of exactly those pages. Then the chunks are
+    merged (header fields from the first chunk that prints them, transactions in page order)
+    and the WHOLE statement is checked again, including the balances across chunk borders and
+    opening + credits - debits = closing. Remaining problems become warnings.
+    """
+    size = profile.statement_chunk_pages
+    total = len(pages)
+    chunks = [(i, pages[i:i + size]) for i in range(0, total, size)]
+    digital = _digital(pages)
+
+    def check_chunk(parsed, chunk_pages):
+        # Opening/closing belong to the whole statement: checked after the merge, not per chunk.
+        rows_only = parsed.model_copy(update={"opening_balance": None, "closing_balance": None})
+        failures = run_checks("bank_statement", rows_only)
+        if digital:
+            failures += _reconciliation_failure(reconcile_rows(parsed, [p["text"] for p in chunk_pages]))
+        return failures
+
+    def read(chunk):
+        i, chunk_pages = chunk
+        return _climb("bank_statement", chunk_pages, profile, gateway, start,
+                      check=lambda parsed: check_chunk(parsed, chunk_pages),
+                      chunk=(i + 1, i + len(chunk_pages), total))
+
+    calls: list[GatewayResult] = []
+    results = []
+    if getattr(gateway, "parallel_safe", False):
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 5)) as pool:
+            futures = [pool.submit(read, c) for c in chunks]
+            for future in futures:                 # collect every chunk's calls, even after a failure
+                try:
+                    results.append(future.result())
+                except JobError as e:
+                    calls += getattr(e, "calls", [])
+                    results.append(None)
+    else:
+        for c in chunks:
+            try:
+                results.append(read(c))
+            except JobError as e:
+                calls += getattr(e, "calls", [])
+                results.append(None)
+    for r in results:
+        if r is not None:
+            calls += r[3]
+    if any(r is None for r in results):
+        err = JobError("extraction_failed")       # a chunk got no usable answer from any model
+        err.calls = calls
+        raise err
+
+    merged = merge_statement_chunks([r[0] for r in results])
+    failures = run_checks("bank_statement", merged) + text_reconciliation_failures("bank_statement", merged, pages)
+    # The strongest model any chunk needed is reported as the result's model.
+    rank = {r.model: i for i, r in enumerate(profile.ladder)}
+    model_id = max((r[2] for r in results), key=lambda m: rank.get(m, -1))
+    return merged, failures, model_id, calls
+
+
+def merge_statement_chunks(parts: list) -> BaseModel:
+    """One statement from its chunks: each header field from the first chunk that has it (the
+    header is usually on page 1; the closing balance may only be on the last page), and the
+    transactions of all chunks in page order."""
+    model = type(parts[0])
+    data = parts[0].model_dump(mode="json")
+    for part in parts[1:]:
+        for key, value in part.model_dump(mode="json").items():
+            if key != "transactions" and data.get(key) in (None, "") and value not in (None, ""):
+                data[key] = value
+    data["transactions"] = [t for part in parts for t in part.model_dump(mode="json")["transactions"]]
+    return model.model_validate(data)
 
 
 # --- the whole document --------------------------------------------------------------------

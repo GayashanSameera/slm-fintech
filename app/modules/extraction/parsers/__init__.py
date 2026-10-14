@@ -25,7 +25,7 @@ from app.gateway import GatewayResult, ModelGateway
 from ..checks import run_checks
 from ..schemas.bank_statement import BankStatement
 from .coverage import coverage_problems
-from .fingerprint import pick_parser
+from .fingerprint import FINGERPRINT_PAGES, pick_parser
 from .reconcile import reconcile
 from .verify import verify
 
@@ -51,12 +51,17 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
     calls: list[GatewayResult] = []
     if not prepared.is_digital_pdf:
         return None, calls, False
-    parser = pick_parser(prepared.pages[0]["text"])
+    parser = pick_parser("\n".join(p["text"] or "" for p in prepared.pages[:FINGERPRINT_PAGES]))
     if parser is None:
         return None, calls, False
 
     try:
-        statement = BankStatement.model_validate(parser.parse(data))
+        raw = parser.parse(data)
+        if raw.get("_declined") == "no_column_titles":
+            # The generic fingerprint is lenient (a few column words); without a real
+            # transaction table this may be another document type: not a Rung 0 attempt.
+            return None, calls, False
+        statement = BankStatement.model_validate(raw)
     except ValidationError:
         log.info("rung0_rejected", job_id=job_id, parser_id=parser.parser_id, error_code="schema_invalid")
         return None, calls, True

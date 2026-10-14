@@ -271,7 +271,7 @@ Lists every supported type with its **JSON Schema** and `schema_version`. Use it
   "schema_version": "1.0",
   "page_count": 2,
   "method": "parser",
-  "parser_id": "hdfc_v1",
+  "parser_id": "generic_v1",
   "verified_by": "us.amazon.nova-lite-v1:0",
   "model_id": null,
   "warnings": [],
@@ -294,7 +294,7 @@ Lists every supported type with its **JSON Schema** and `schema_version`. Use it
 | `document_type_source` | `client` (you sent it), `detected` (classified by AI, with `document_type_confidence` 0–1), or `parser` (recognised bank layout) |
 | `schema_version` | Version of the result's field layout; it increases when fields change |
 | `page_count` | Pages processed |
-| `method` | `parser`: read by a deterministic Python parser for a known bank layout. `ai`: read by an AI model |
+| `method` | `parser`: read by a deterministic Python parser that recognised the statement's layout. `ai`: read by an AI model |
 | `parser_id` / `verified_by` | Parser method only: which layout parser read it, and which AI model independently confirmed its key facts. `verified_by: null` means the operator configured your organisation for checks only, with no AI |
 | `model_id` | AI method only: the model that produced the result |
 | `warnings` | Codes for anything you should review (section 8). Empty means every check passed |
@@ -347,7 +347,7 @@ Every result is checked before it's returned. What a clean result guarantees:
 |---|---|---|
 | **Arithmetic** | bank statements, invoices, payslips | Statements: every row's running balance, and opening + credits − debits = closing. Invoices: line items = subtotal, subtotal + taxes = total. Payslips: earnings = gross, gross − deductions = net. Tolerance 0.01 |
 | **Text reconciliation** | digital (non-scanned) PDF bank statements | **Every row, every field** (date, description, reference, amounts) and the header fields match the document's own text, independently re-read, in order, with no row missing or extra. No AI involved |
-| **Independent AI check** | `method: parser` results | A second reader (Nova Lite) reads holder, account, IFSC, branch, period, first and last row from the page images; any difference rejects the parser result |
+| **Independent AI check** | `method: parser` results | A second reader (Nova Lite) reads holder, account, IFSC, branch, period, first and last row from the page images; any difference in a field both readings have rejects the parser result |
 | **Format checks** | all | PAN, GSTIN, IFSC formats |
 
 How results are produced:

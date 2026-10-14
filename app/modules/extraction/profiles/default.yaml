@@ -42,6 +42,11 @@ classifier:
   models: [us.amazon.nova-lite-v1:0, us.anthropic.claude-haiku-5-5]
   min_confidence: 0.8
 
+# Long bank statements are read by AI in chunks of this many pages, in parallel (pipeline.py).
+# One model answer has an output limit (8000 tokens, ~120 rows); 3 pages stay far below it, so
+# no row is ever cut off, and a chunk that fails its checks is re-read alone.
+statement_chunk_pages: 3
+
 rung0:                                     # Python parsers, verified by AI (§3.3)
   enabled: true
   verifier: us.amazon.nova-lite-v1:0

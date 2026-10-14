@@ -23,7 +23,9 @@ lives here, so adding a bank is mostly configuration (requirement FR-9.6).
 from __future__ import annotations
 
 import io
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 import pdfplumber
@@ -37,6 +39,50 @@ AMOUNT_RE = re.compile(r"^\(?-?[\d,]+\.\d{2}\)?(Cr|Dr|CR|DR)?$")
 class ColumnSpec:
     key: str      # our field name: "date", "description", "reference", "debit", "credit", "balance"
     label: str    # the header text printed by the bank, e.g. "Withdrawal Amt."
+
+
+# Fonts whose "text" is not real text:
+#   * legacy Sinhala / Tamil / Hindi fonts (FM Malithi, FM Abhaya, Bamini, Kruti Dev, ...) draw
+#     the local script with Latin code points, so their words read as garbage such as ".sKqï";
+#     banks print bilingual column titles with them (the English title is what we read);
+#   * symbol fonts (bullets, ticks, icons).
+_NOT_TEXT_FONT = re.compile(r"(?i)^([A-Z]{6}\+)?(FM[A-Z]|DL[-_]|kruti|devlys|chanakya|walkman|shusha|bamini|baamini|"
+                            r"kalaham|amudham|thamizha|zapfdingbats|dingbats|wingdings|webdings|symbol)")
+
+
+def page_words(page, keep_other_scripts: bool = False) -> list[dict]:
+    """The words of one pdfplumber page, WITHOUT text that isn't part of the document's content:
+
+    * watermarks: "SAMPLE", "COPY", "DUPLICATE" printed diagonally across the page. Their letters
+      sit on top of the table and would otherwise merge into amounts ("530,447.3N1"). They are
+      recognised by their ANGLE: every character whose rotation differs from the page's main
+      text direction is dropped;
+    * words in legacy-script and symbol fonts (see _NOT_TEXT_FONT);
+    * glyphs without a character code, which pdfplumber shows as "(cid:127)".
+
+    With `keep_other_scripts`, words in legacy-script and symbol fonts are KEPT but marked
+    `"script": True`: their text is useless, but their POSITION still tells where a bilingual
+    column title starts (the generic parser uses this to find the column's left edge).
+    """
+    def angle(ch: dict) -> float:
+        a, b = ch["matrix"][0], ch["matrix"][1]
+        return round(math.atan2(b, a), 2)
+
+    angles = Counter(angle(ch) for ch in page.chars)
+    main = angles.most_common(1)[0][0] if angles else 0.0
+
+    def keep(obj: dict) -> bool:
+        if obj.get("object_type") != "char":
+            return True
+        return (angle(obj) == main
+                and not obj["text"].startswith("(cid:")
+                and (keep_other_scripts or not _NOT_TEXT_FONT.match(obj.get("fontname") or "")))
+
+    words = page.filter(keep).extract_words(x_tolerance=1.5, y_tolerance=2, extra_attrs=["fontname"])
+    for w in words:
+        if _NOT_TEXT_FONT.match(w.get("fontname") or ""):
+            w["script"] = True
+    return words
 
 
 def group_into_lines(words: list[dict], tolerance: float = 3.0) -> list[list[dict]]:
@@ -83,7 +129,7 @@ class StatementParser:
     def parse(self, data: bytes) -> dict:
         """Return a dict shaped like the BankStatement schema (validated by the caller)."""
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            pages_lines = [group_into_lines(p.extract_words(x_tolerance=1.5, y_tolerance=2)) for p in pdf.pages]
+            pages_lines = [group_into_lines(page_words(p)) for p in pdf.pages]
 
         # Header fields are searched on ALL pages: most are on page 1, but the
         # closing balance is usually printed after the table on the last page.

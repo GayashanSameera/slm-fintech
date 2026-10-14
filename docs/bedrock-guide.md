@@ -424,7 +424,7 @@ If we exceed them, Bedrock returns `ThrottlingException`. Before going live we r
 | `ModelTimeoutException` | The model took too long | Retry; consider splitting the input (we split long bank statements). |
 | `ServiceUnavailableException` / `InternalServerException` | A temporary problem on AWS's side | Retry with backoff. Our SQS redelivery is the last safety net. |
 | `ResourceNotFoundException` | The model or profile ID does not exist in this region | Check the ID and the region (`aws bedrock list-inference-profiles`). |
-| `stopReason = "max_tokens"` (not an exception) | The answer was cut off at `maxTokens` | Raise `maxTokens` or make the output shorter. Never parse a cut-off JSON. |
+| `stopReason = "max_tokens"` (not an exception) | The answer was cut off at `maxTokens` | Send fewer pages per call (long statements are read in 3-page chunks, `pipeline.run_chunked_statement`) or raise `maxTokens`. Never ask the model for a "shorter" answer: for a statement it drops rows. Never parse a cut-off JSON. |
 
 Configure boto3 retries like this:
 

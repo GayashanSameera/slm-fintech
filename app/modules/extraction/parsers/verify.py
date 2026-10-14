@@ -2,8 +2,8 @@
 
 HOW IT WORKS: "read independently, compare in code".
   1. The cheapest model (Nova Lite) reads a few KEY fields from the statement pages
-     itself: account holder, account number, IFSC, branch, period, and the first and
-     last transaction (date + description).
+     itself: account number and period (required), and, where printed, account holder,
+     IFSC, branch, and the first and last transaction (date + description).
   2. Our code compares its reading with the parser's result, field by field, after
      normalising case, spaces and date formats.
   3. Any mismatch rejects the parser result (the statement then goes to the AI ladder).
@@ -41,14 +41,22 @@ from app.gateway import GatewayResult, ModelGateway
 
 from ..prompts import VERIFY_INSTRUCTION, VERIFY_SYSTEM, strip_code_fences
 from ..schemas.base import parse_date
+from .lexicon import parse_any_date
 
 log = get_logger(__name__)
 
 # Fields the model must read; if it can't, we can't confirm the parser, so it's a mismatch.
-REQUIRED = ("account_holder", "account_number", "ifsc", "period_from", "period_to")
-# Compared when the model returns them (some layouts don't print a branch).
-OPTIONAL = ("branch", "first_transaction.date", "first_transaction.description",
+# (Account holder and IFSC are not REQUIRED: many statements, e.g. Sri Lankan ones, print no
+# IFSC, and some print the holder only in an address block the parser doesn't read.)
+REQUIRED = ("account_number", "period_from", "period_to")
+# Compared when BOTH sides have a value (a layout may not print a branch; the parser may not
+# have found the holder). A value the parser has but the model reads differently rejects.
+OPTIONAL = ("account_holder", "ifsc", "branch", "first_transaction.date", "first_transaction.description",
             "last_transaction.date", "last_transaction.description")
+# Free text: models shorten long descriptions or leave out a wrapped line, so these match when one
+# reading CONTAINS the other. Exact words are already proven by the text reconciliation
+# (reconcile.py); here the question is only "is this the right row / the right person".
+LENIENT = ("account_holder", "branch", "first_transaction.description", "last_transaction.description")
 
 
 @dataclass
@@ -77,29 +85,43 @@ def _get(data: dict, path: str):
     return node
 
 
-def _normalise(value) -> str | None:
-    """Comparable form: dates -> ISO, everything else -> no spaces, case-folded."""
+def _normalise(value, hint=None) -> str | None:
+    """Comparable form: dates -> ISO (a date without a year takes it from `hint`, the
+    statement's end date), everything else -> no spaces, case-folded."""
     if value is None or value == "":
         return None
+    text = str(value).strip()
     try:
-        parsed = parse_date(value)
+        parsed = parse_date(text)
         if parsed:
             return parsed.isoformat()
     except ValueError:
         pass
-    return re.sub(r"\s+", "", str(value)).casefold()
+    as_date = parse_any_date(text, hint)
+    if as_date:
+        return as_date.isoformat()
+    return re.sub(r"\s+", "", text).casefold()
 
 
 def compare(model_reading: dict, parsed: dict) -> list[str]:
     """Paths where the model's independent reading doesn't confirm the parser."""
+    try:
+        hint = parse_date(parsed.get("period_to"))       # ISO "2026-08-31" from the parser
+    except ValueError:
+        hint = None
     issues = []
     for path in REQUIRED + OPTIONAL:
-        theirs, ours = _normalise(_get(model_reading, path)), _normalise(_get(parsed, path))
-        if theirs is None:
-            if path in REQUIRED:
-                issues.append(path)          # couldn't be confirmed
+        theirs, ours = _normalise(_get(model_reading, path), hint), _normalise(_get(parsed, path), hint)
+        if path in REQUIRED:
+            if theirs is None or theirs != ours:
+                issues.append(path)          # missing on either side, or different
             continue
-        if theirs != ours:
+        if theirs is None or ours is None:
+            continue                         # not printed / not found: nothing to compare
+        if path in LENIENT:
+            if theirs not in ours and ours not in theirs:
+                issues.append(path)
+        elif theirs != ours:
             issues.append(path)
     return issues
 

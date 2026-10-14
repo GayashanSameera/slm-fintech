@@ -22,6 +22,9 @@ from .base import GatewayResult
 
 
 class OllamaGateway:
+    # One local model on a laptop: running chunks in parallel would only queue them up.
+    parallel_safe = False
+
     def generate(self, *, model_id, system, pages, instruction, thinking=False, max_tokens=8000):
         """Same contract as BedrockGateway.generate, for a local Ollama model (developer laptop only).
 

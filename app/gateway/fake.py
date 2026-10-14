@@ -19,6 +19,9 @@ from .base import GatewayResult
 
 
 class FakeGateway:
+    # Answers come from a queue in order, so chunked extraction must call it one chunk at a time.
+    parallel_safe = False
+
     def __init__(self) -> None:
         """No answers queued yet; every call will be recorded in `calls`."""
         self._responses: deque[str] = deque()

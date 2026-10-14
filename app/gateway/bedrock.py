@@ -99,6 +99,9 @@ _RETRYABLE = {"ThrottlingException", "ServiceUnavailableException", "InternalSer
 
 
 class BedrockGateway:
+    # boto3 clients are thread-safe: chunks of a long statement are read in parallel (pipeline.py).
+    parallel_safe = True
+
     def __init__(self) -> None:
         """One bedrock-runtime client with adaptive retries and a 110 s read timeout
         (a long statement can take a while to generate).

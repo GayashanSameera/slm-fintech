@@ -16,8 +16,10 @@ def _escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def make_pdf(pages: list[list[tuple[float, float, str]]], font_size: int = 9) -> bytes:
-    """pages: one list per page of (x, y, text). (0, 0) is the bottom-left corner."""
+def make_pdf(pages: list[list[tuple]], font_size: int = 9) -> bytes:
+    """pages: one list per page of (x, y, text) or (x, y, text, angle in degrees) — an angle
+    draws rotated text, e.g. a diagonal "SAMPLE" watermark. (0, 0) is the bottom-left corner.
+    Text is encoded as Windows-1252 (the PDF's WinAnsiEncoding), so "–", "—", "€", "é" work."""
     objects: list[bytes] = []
 
     def add(obj: bytes) -> int:
@@ -29,10 +31,8 @@ def make_pdf(pages: list[list[tuple[float, float, str]]], font_size: int = 9) ->
     pages_obj_index = add(b"")       # placeholder, filled in after we know the page ids
     page_ids = []
     for lines in pages:
-        stream = "BT\n" + "".join(
-            f"/F1 {font_size} Tf 1 0 0 1 {x:.1f} {y:.1f} Tm ({_escape(t)}) Tj\n" for x, y, t in lines
-        ) + "ET\n"
-        data = stream.encode("latin-1")
+        stream = "BT\n" + "".join(_show(item, font_size) for item in lines) + "ET\n"
+        data = stream.encode("cp1252")
         content = add(b"<< /Length %d >>\nstream\n" % len(data) + data + b"endstream")
         page = add(
             b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 595 842] /Contents %d 0 R "
@@ -53,6 +53,16 @@ def make_pdf(pages: list[list[tuple[float, float, str]]], font_size: int = 9) ->
     out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
     out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, catalog, xref_at)
     return bytes(out)
+
+
+def _show(item: tuple, font_size: int) -> str:
+    """One text-showing operation: position (and rotation) matrix, then the string."""
+    import math
+
+    x, y, text = item[:3]
+    angle = math.radians(item[3]) if len(item) > 3 else 0.0
+    a, b = math.cos(angle), math.sin(angle)
+    return f"/F1 {font_size} Tf {a:.4f} {b:.4f} {-b:.4f} {a:.4f} {x:.1f} {y:.1f} Tm ({_escape(text)}) Tj\n"
 
 
 # Column x positions for the synthetic DEMO BANK statement layout.

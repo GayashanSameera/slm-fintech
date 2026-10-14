@@ -218,21 +218,29 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
 1. `page_texts` = the text layer of every page (empty for scans).
 2. **Rung 0**, if `profile.rung0_enabled` and the requested type is `None`, `auto` or `bank_statement`: `parsers.try_rung0(...)`:
    1. `prepared.is_digital_pdf`. ✗ any scanned page → return `(None, [], attempted=False)`.
-   2. `parsers/fingerprint.pick_parser(page1 text)` → each parser's `StatementParser.matches(text)`: **all** marker texts and **all** column labels must be present. ✗ no match → `(None, [], False)`.
-   3. `parser.parse(data)`:
-      1. pdfplumber opens the PDF;
-      2. for each page: `extract_words` → `group_into_lines` (words with the same `top` within 3 points, sorted left to right);
-      3. `parse_header(all lines)`: "Label: value" pairs;
-      4. `parse_rows(lines)` on each page: find the column header line, assign each word to the nearest column, start a new row at a date-led line, append continuation lines to the description, stop at `table_end_label`.
+   2. `parsers/fingerprint.pick_parser(text of the first 3 pages)` → each registered parser's `matches(text)`, in order:
+      - bank-specific parsers (`parsers/bank/*.py`): **all** marker texts and **all** column labels must be present;
+      - `GenericStatementParser` (always **last**): some line names a date, a balance and an amount column (`COLUMN_TITLES`).
 
+      ✗ no match → `(None, [], False)`.
+   3. `parser.parse(data)`. For the generic parser (`parsers/generic.py`):
+      1. pdfplumber opens the PDF; `base.page_words` per page drops **watermark** characters (rotated against the page's text direction), words in **legacy-script and symbol fonts** (e.g. Sinhala FM-fonts, which read as garbage), and `(cid:…)` glyphs. `group_into_lines` groups the words into lines;
+      2. **column titles:** the first line where `find_columns` recognises a date, a balance and an amount column. Words that aren't titles join the nearest title (bilingual titles); a lone unknown group is an `other` column. ✗ none → `Decline("no_column_titles")` → `{"transactions": [], "_declined": ...}`, and `try_rung0` returns `(None, [], False)`: perhaps not a statement at all;
+      3. `read_header(lines above the table)`: for each label (multi-word labels first), the value to the **right** (also on lines that vertically overlap the label: two-line captions like "OPENING / BALANCE"), else **below** (summary tables), else **above** (caption lines like "HOLDER  PERIOD"). The value must have the field's form (an account token with 4+ digits, an amount, a date range, a short name);
+      4. `Table(columns, table_lines)`: `_calibrate` finds where each amount column's figures really are (their right edges, left edges or centres form one tight cluster per amount column);
+      5. `_rows`: per line, `Table.route` puts each word in a column; a line with a date in the date column **and** an amount is a row; `B/F` / "Opening Balance" lines give the opening balance; "Total" / "Closing balance" end the table; repeated title lines, day headings and page headers/footers are skipped;
+      6. `_assign_extras`: wrapped description lines join the row they are **vertically chained** to (above or below it). A line about equally near two rows → `Decline("ambiguous_wrapped_line")`. A second opening balance or rows after the table's end → `Decline` (two accounts in one file);
+      7. `_finish_row`: description and reference in reading order; amounts per column; one Amount column → the side from the Type/Dr-Cr cell, a `Cr`/`Dr` suffix, the sign, or the balance movement; `0.00` and `—` → empty.
+
+      Any `Decline` returns no rows: the coverage check rejects the result and AI extracts the statement. **The parser never guesses.**
       ✗ exception → log `rung0_parser_error` → `(None, [], True)`. **A parser bug never fails the job.**
    4. `BankStatement.model_validate(dict)` runs `parse_date` / `parse_money` per field. ✗ `ValidationError` → `rung0_rejected: schema_invalid` → `(None, [], True)`.
    5. Three checks, each listing failures:
-      1. `checks.run_checks("bank_statement")` → `check_bank_statement`: running balance per row, opening + credits − debits = closing, IFSC format;
-      2. `coverage.coverage_problems`: row count = date-led lines, last balance = closing, header fields present;
+      1. `checks.run_checks("bank_statement")` → `check_bank_statement`: running balance per row, opening + credits − debits = closing, IFSC format (when there is an IFSC);
+      2. `coverage.coverage_problems`: row count = `lexicon.text_row_starts` (lines of the PDFium text that start with a date, not balance lines, periods or a wrapped range's second date), last balance = closing, account number / period / opening / closing present;
       3. `reconcile.reconcile(statement, page_texts)`:
-         - `reconcile_header`: account number, IFSC and holder in the text; opening and closing balance among the amounts; period dates among the dates;
-         - `reconcile_rows`: `_lines` → the date-led lines (count = rows), then per row: the date, `_amounts_on(first line)` = {debit or credit, balance} exactly, the reference and the description in the row's block.
+         - `reconcile_header`: account number, IFSC, holder and branch in the text; opening and closing balance among the amounts; the period as a printed range (or its two dates);
+         - `reconcile_rows`: the same row starts (count = rows), then per row: the date; `_amounts_match`: reading on from the date line, the row's non-zero amounts appear exactly, before any other amount; every word of the description and reference between the previous and next rows.
 
       ✗ any failure → `rung0_rejected: checks_failed` (with the names) → `(None, [], True)`.
    6. Tenant `verification_mode == "checks_only"` → `Rung0Outcome(statement, parser_id, verified_by=None)`. **No AI call at all.**
@@ -243,7 +251,7 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
 
          ⇢ **Bedrock** `Converse` (`us.amazon.nova-lite-v1:0`) → `GatewayResult(text, tokens)`.
       2. `json.loads(strip_code_fences(text))`: the model's **independent reading** of holder, account, IFSC, branch, period, first and last transaction.
-      3. `compare(reading, parser_view(statement))`: for each field, normalise both sides (`parse_date` → ISO, or strip spaces and case-fold) and compare. A required field the model couldn't read counts as an issue.
+      3. `compare(reading, parser_view(statement))`: normalise both sides (dates → ISO, a year-less date takes the statement's year; text → no spaces, case-folded). **Required** (account number, period): must be read and equal. **Optional** (holder, IFSC, branch, first/last row): compared only when both sides have a value; holder, branch and descriptions match when one reading contains the other.
       4. Log `rung0_verified(agree, issue_paths)` → `VerifyResult`.
       - ✗ disagree → `rung0_rejected: verifier_disagreed` → `(None, [call], True)`.
    8. Agree → `Rung0Outcome(statement, parser_id, verified_by=nova-lite)`.
@@ -256,8 +264,8 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
      2. known type with confidence ≥ 0.8 → return; else try the next model;
      3. none → the best answer at 0.5 or above; ✗ else `JobError("unrecognised_document_type")`, carrying the calls.
 4. **Start rung:** `profile.rung0_fallback_rung` (Haiku) for a statement Rung 0 already tried; otherwise `profile.start_rung[type]`.
-5. `pipeline.run_ladder(type, pages, profile, gateway, start)`:
-   1. `spec = REGISTRY[type]`; `system = prompts.system_prompt(spec)`: rules plus the JSON schema, identical on every call, so Bedrock caches it.
+5. `pipeline.run_ladder(type, pages, profile, gateway, start)`. A **bank statement longer than 3 pages** (`profile.statement_chunk_pages`) goes to `run_chunked_statement` instead (step 5b). Otherwise `_climb`:
+   1. `spec = REGISTRY[type]`; `system = prompts.system_prompt(spec)`: rules (plus `TYPE_RULES`, e.g. the bank-statement rules) and the JSON schema, identical on every call, so Bedrock caches it.
    2. `attempt_plan(profile, start)`, with the default profile starting at Haiku: `[(Haiku, no thinking), (Haiku, thinking), (Sonnet, no thinking)]`.
    3. For each attempt:
       1. `gateway.generate(model, system, pages, prompts.instruction(problems), thinking)` → `build_request`:
@@ -268,7 +276,7 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
 
          ⇢ **Bedrock** `Converse`. ✗ throttling or timeout → `TemporaryError` (the job is retried by SQS).
       2. `parse_and_validate(result, spec.model)`:
-         - ✗ `max_tokens` → problem "answer cut off";
+         - ✗ `max_tokens` → problem "cut off: return the COMPLETE JSON, every row" (never "shorter": for a statement that means dropped rows);
          - ✗ not JSON or not an object → problem;
          - ✗ `ValidationError` → problems name the **fields and error types only**.
 
@@ -277,6 +285,13 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
       4. Keep the attempt with the fewest failures as `best`. Log `ladder_attempt`.
       5. `blocking` = failures except `DOCUMENT_ONLY` (`document_expired`, `required_fields_missing`). Empty → **stop**; otherwise `problems` = the failure messages, sent to the next attempt.
    4. ✗ no usable answer in any attempt → `JobError("extraction_failed")`, carrying every call.
+
+   **5b. `run_chunked_statement`** (long bank statements):
+   1. split the pages into chunks of 3 (pages 1–3, 4–6, ...);
+   2. each chunk runs its own `_climb` with `instruction(problems, chunk=(first, last, total))` ("pages 4 to 6 of a 15-page statement: every row printed on these pages"). Its check: the running balance from row to row inside the chunk, and (digital PDFs) `reconcile_rows` against **those pages'** text. A failing chunk climbs the ladder **alone**;
+   3. chunks run **in parallel** (`ThreadPoolExecutor`, at most 5) when `gateway.parallel_safe` (Bedrock); one after another for the FakeGateway and Ollama;
+   4. `merge_statement_chunks`: each header field from the first chunk that has it, transactions in page order;
+   5. the whole statement is checked again (balances across chunk borders, opening + credits − debits = closing, full text reconciliation): remaining failures become warnings. The reported model is the strongest one any chunk needed.
 6. `normalise.to_result(parsed)` gives every field, with `null` for missing ones. `warnings` = failure codes, plus `document_type_mismatch` if a client-named type produced an empty result.
 7. `masking.mask(result, strict = identity/KYC type or Aadhaar markers in text or result, unmasked_kinds)`:
    - walks every field;
@@ -410,7 +425,7 @@ A 1-page digital bank statement sent with `wait=25`, as measured on production:
 | 0.05 | api λ | `create_extraction` → `create_direct`: detect, tenant settings, dedup miss, S3 put, job create, SQS send |
 | 0.3 | worker λ | `handle_sqs_event` → `claim` → wait for the GuardDuty tag (usually 1–3 s) |
 | ~2 | worker λ | `Blobs.get` → `preprocess` (PDFium text + render) |
-| ~2.3 | worker λ | `try_rung0`: fingerprint → parse (pdfplumber) → schema → checks → coverage → **reconcile** |
+| ~2.3 | worker λ | `try_rung0`: fingerprint → parse (bank-specific or generic parser, pdfplumber) → schema → checks → coverage → **reconcile** |
 | ~2.5–5 | worker λ → Bedrock | `verify` → Nova Lite reads the key facts → `compare` → agree |
 | ~5 | worker λ | mask → `complete` (result + usage, ~USD 0.0002) → delete source → dedup → usage → webhook queued |
 | 0.25 → ~5 | api λ | `wait_for_job` has been polling DynamoDB; it sees `succeeded` → `public_job` → **200** with the result |

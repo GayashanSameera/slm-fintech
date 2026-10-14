@@ -51,7 +51,8 @@ app/
 │   ├── worker.py           one job from start to finish                                         ← worker λ
 │   ├── pipeline.py         Rung 0 or AI ladder → checks → mask
 │   ├── preprocess/         detect.py, pdf.py, image.py, docx.py
-│   ├── parsers/            Rung 0: fingerprint, base, coverage, verify, bank/demo_bank_v1.py
+│   ├── parsers/            Rung 0: fingerprint, generic (any layout), lexicon, base, coverage,
+│   │                       reconcile, verify, bank/demo_bank_v1.py
 │   ├── classify.py, checks.py, masking.py, normalise.py, prompts.py, window.py
 │   ├── schemas/            one Pydantic model per document type
 │   └── profiles/           default.yaml: the model ladder
@@ -231,31 +232,31 @@ Why images are downscaled: models bill images by pixel count, and a 4,000 px pho
 
 ## Stage 8: Rung 0, Python parser + AI verification
 
-Entry: [pipeline.py `extract_document`](../app/modules/extraction/pipeline.py#L149) calls [parsers/__init__.py `try_rung0`](../app/modules/extraction/parsers/__init__.py#L41) when Rung 0 is enabled in the profile and the requested type is `bank_statement` or not given.
+Entry: [pipeline.py `extract_document`](../app/modules/extraction/pipeline.py#L279) calls [parsers/__init__.py `try_rung0`](../app/modules/extraction/parsers/__init__.py#L43) when Rung 0 is enabled in the profile and the requested type is `bank_statement` or not given.
 
 | Step | Code | Rejects the parser result when |
 |---|---|---|
 | 1. Eligible? | `Prepared.is_digital_pdf` | any page is scanned (no attempt) |
-| 2. Which bank layout? | [fingerprint.py `pick_parser`](../app/modules/extraction/parsers/fingerprint.py#L20) → `StatementParser.matches` | page 1 doesn't contain all marker texts **and** all column labels (no attempt) |
-| 3. Parse | [parsers/base.py `StatementParser.parse`](../app/modules/extraction/parsers/base.py) (pdfplumber word positions → lines → columns; a line starting with a date starts a new row) | the parser crashes (logged as `rung0_parser_error`; **never fails the job**) |
+| 2. Which layout? | [fingerprint.py `pick_parser`](../app/modules/extraction/parsers/fingerprint.py#L28) → each parser's `matches`, on the text of the **first 3 pages** | no bank-specific parser (all marker texts **and** column labels) and no generic match (a line naming a date, a balance and an amount column) (no attempt) |
+| 3. Parse | a bank-specific parser ([parsers/base.py](../app/modules/extraction/parsers/base.py)) or, for every other layout, the **generic parser** [parsers/generic.py](../app/modules/extraction/parsers/generic.py): word positions without watermarks or legacy-font text → the column-title line (reused on every page) → header values right of / below / above their labels → rows (a date and an amount), with wrapped description lines above or below | the parser crashes (logged as `rung0_parser_error`; **never fails the job**); the generic parser finds no transaction table (no attempt: maybe not a statement) or **declines** an ambiguous layout (a wrapped line between two rows, two accounts in one file): no rows, so coverage rejects it |
 | 4. Schema | `BankStatement.model_validate` ([schemas/bank_statement.py](../app/modules/extraction/schemas/bank_statement.py)) | a date or amount can't be read (`schema_invalid`) |
-| 5. Arithmetic | [checks.py `check_bank_statement`](../app/modules/extraction/checks.py#L65) | running balance wrong on any row; opening + credits − debits ≠ closing; bad IFSC |
-| 6. Coverage | [coverage.py `coverage_problems`](../app/modules/extraction/parsers/coverage.py#L27) | parsed rows ≠ date-led lines on the pages; last balance ≠ closing; header field missing |
+| 5. Arithmetic | [checks.py `check_bank_statement`](../app/modules/extraction/checks.py#L69) | running balance wrong on any row; opening + credits − debits ≠ closing; bad IFSC (when printed) |
+| 6. Coverage | [coverage.py `coverage_problems`](../app/modules/extraction/parsers/coverage.py#L25) | parsed rows ≠ row starts in the page text ([lexicon.py `text_row_starts`](../app/modules/extraction/parsers/lexicon.py): date-led lines, not balance lines or periods); last balance ≠ closing; account number, period, opening or closing balance missing |
 | 6b. Text reconciliation | [reconcile.py `reconcile`](../app/modules/extraction/parsers/reconcile.py) | any row's date, amounts, reference or description, or any header field, doesn't match the PDF text re-read by pypdfium2 (a different library from the parser's pdfplumber), in order, with no row missing or extra. No AI |
-| 7. AI check | [verify.py `verify`](../app/modules/extraction/parsers/verify.py) with **Nova Lite** (~150 output tokens, temperature 0) | **Read independently, compare in code.** Nova reads the key facts itself (holder, account number, IFSC, branch, period, first and last transaction) without seeing the parser's output; [`compare`](../app/modules/extraction/parsers/verify.py) checks them against the parser (case, spaces and date formats normalised). Any mismatch, a required field it couldn't read, or an unreadable answer rejects. The verifier can only **reject**, never change a value. Amounts are not re-read: arithmetic already proved them. |
+| 7. AI check | [verify.py `verify`](../app/modules/extraction/parsers/verify.py) with **Nova Lite** (~150 output tokens, temperature 0) | **Read independently, compare in code.** Nova reads the key facts itself (holder, account number, IFSC, branch, period, first and last transaction) without seeing the parser's output; [`compare`](../app/modules/extraction/parsers/verify.py) checks them against the parser (case, spaces and date formats normalised). Account number and period are **required**; the others are compared when both sides have them (many statements print no IFSC). Any mismatch, a required field it couldn't read, or an unreadable answer rejects. The verifier can only **reject**, never change a value. Amounts are not re-read: arithmetic already proved them. |
 
 - **Skipped verification:** with tenant setting `verification_mode = checks_only`, step 7 is skipped. The statement then never reaches any AI service.
-- **Accepted result:** method `parser`, `parser_id` (e.g. `demo_bank_v1`), `verified_by` = the Nova Lite model id.
+- **Accepted result:** method `parser`, `parser_id` (`generic_v1`, or a bank-specific id such as `demo_bank_v1`), `verified_by` = the Nova Lite model id.
 - **Rejected result:** the document goes to the AI ladder starting at **Haiku** (`rung0.fallback_rung`), because Nova has already seen it.
 
 ---
 
 ## Stage 9: document type
 
-In [`extract_document`](../app/modules/extraction/pipeline.py#L149):
+In [`extract_document`](../app/modules/extraction/pipeline.py#L279):
 
 - **The tenant sent a type:** it is used, with source `client`.
-- **A Rung 0 parser matched the layout** (even if its result was then rejected): `bank_statement`.
+- **A Rung 0 parser read a transaction table** (even if its result was then rejected): `bank_statement`.
 - **Otherwise:** [classify.py `classify`](../app/modules/extraction/classify.py#L32) asks about **page 1 only** (image + first 1,500 characters, max 100 output tokens):
   1. Nova Lite first; if its answer is unreadable, below 0.8 confidence, or `other` → Claude Haiku;
   2. still no answer at 0.8 or above: the best answer at 0.5 or above is accepted, with its low confidence recorded;
@@ -265,9 +266,9 @@ In [`extract_document`](../app/modules/extraction/pipeline.py#L149):
 
 ## Stage 10: the AI model ladder
 
-[pipeline.py `run_ladder`](../app/modules/extraction/pipeline.py#L111), driven by the profile [profiles/default.yaml](../app/modules/extraction/profiles/default.yaml) (loaded by [`load_profile`](../app/modules/extraction/profiles/__init__.py#L37)).
+[pipeline.py `run_ladder`](../app/modules/extraction/pipeline.py#L181), driven by the profile [profiles/default.yaml](../app/modules/extraction/profiles/default.yaml) (loaded by [`load_profile`](../app/modules/extraction/profiles/__init__.py#L37)).
 
-**The plan** ([`attempt_plan`](../app/modules/extraction/pipeline.py#L64)): start on `start_rung[doc_type]` (Haiku for every type until the phase-0 evaluation says otherwise). Haiku gets one retry **with thinking**, then the ladder climbs, with at most 1 + `max_climbs` = 3 attempts:
+**The plan** ([`attempt_plan`](../app/modules/extraction/pipeline.py#L67)): start on `start_rung[doc_type]` (Haiku for every type until the phase-0 evaluation says otherwise). Haiku gets one retry **with thinking**, then the ladder climbs, with at most 1 + `max_climbs` = 3 attempts:
 
 ```
 Haiku 5.5  →  Haiku 5.5 + thinking  →  Sonnet 5.5
@@ -277,11 +278,11 @@ Haiku 5.5  →  Haiku 5.5 + thinking  →  Sonnet 5.5
 
 | Step | Code | Passes when |
 |---|---|---|
-| Build the prompt | [prompts.py `system_prompt`](../app/modules/extraction/prompts.py#L35) (rules + JSON schema; cached by Bedrock) and [`instruction`](../app/modules/extraction/prompts.py#L40) (the request, plus what was wrong last time) | n/a |
+| Build the prompt | [prompts.py `system_prompt`](../app/modules/extraction/prompts.py#L54) (rules + per-type rules such as the bank-statement rules + JSON schema; cached by Bedrock) and [`instruction`](../app/modules/extraction/prompts.py#L62) (the request, plus what was wrong last time) | n/a |
 | Call the model | [gateway `get_gateway`](../app/gateway/__init__.py#L13) → [bedrock.py `BedrockGateway.generate`](../app/gateway/bedrock.py#L55) (Bedrock **Converse** API; pages wrapped in `<page>` tags so document text stays data; refuses model ids outside the approved list) | n/a |
-| Gate 1: JSON | [`parse_and_validate`](../app/modules/extraction/pipeline.py#L95) + `strip_code_fences` | the answer is one JSON object and wasn't cut off (`max_tokens`) |
+| Gate 1: JSON | [`parse_and_validate`](../app/modules/extraction/pipeline.py#L98) + `strip_code_fences` | the answer is one JSON object and wasn't cut off (`max_tokens`; the retry then asks for the COMPLETE answer, never a shorter one) |
 | Gate 2: schema | `model.model_validate` (Pydantic, [schemas/](../app/modules/extraction/schemas/)) | every field has the right shape; dates and amounts normalise; unknown fields are **dropped** |
-| Gate 3: checks | [checks.py `run_checks`](../app/modules/extraction/checks.py#L147) | sums add up within 0.01; PAN, GSTIN and IFSC formats are valid |
+| Gate 3: checks | [checks.py `run_checks`](../app/modules/extraction/checks.py#L159) | sums add up within 0.01; PAN, GSTIN and IFSC formats are valid |
 | Gate 3b: text reconciliation | [pipeline.py `text_reconciliation_failures`](../app/modules/extraction/pipeline.py) | digital bank statements only: every AI-extracted row must match the PDF text exactly (same check as Rung 0 step 6b). A mismatch counts as a failed check: the ladder climbs, and at the top it becomes the warning `text_reconciliation_failed` |
 
 - **A gate fails:** the problems go into the next attempt's instruction. Field names and error types are included, plus check messages with numbers (model only), but **never** the document values from validation errors.
@@ -291,11 +292,13 @@ Haiku 5.5  →  Haiku 5.5 + thinking  →  Sonnet 5.5
 - **No usable JSON from any attempt:** the job fails with `extraction_failed`, and its tokens are still metered.
 - **Bedrock throttling or a timeout:** `TemporaryError`, and the job is retried through SQS.
 
+**Long bank statements** ([`run_chunked_statement`](../app/modules/extraction/pipeline.py#L194)): a statement over 3 pages (`statement_chunk_pages` in the profile) is read in **chunks of 3 pages, in parallel**. One answer can hold ~120 rows (8000 output tokens); a 15-page statement has ~190, so a single call would be cut off. Each chunk climbs the ladder on its own (checked: the running balance inside the chunk and, for digital PDFs, its rows against those pages' text), then [`merge_statement_chunks`](../app/modules/extraction/pipeline.py#L263) joins them (header from the first chunk that prints each field, rows in page order) and the whole statement is checked again.
+
 ---
 
 ## Stage 11: normalise and mask
 
-The last steps before anything is stored ([`extract_document`](../app/modules/extraction/pipeline.py#L149)):
+The last steps before anything is stored ([`extract_document`](../app/modules/extraction/pipeline.py#L279)):
 
 1. **Normalise.** [normalise.py `to_result`](../app/modules/extraction/normalise.py#L17) dumps the model with every field present, using `null` for missing ones (FR-3.6). Dates become `YYYY-MM-DD` and amounts become 2-decimal strings, through the field types in [schemas/base.py](../app/modules/extraction/schemas/base.py): `parse_date` tries 13 Indian date formats, and `parse_money` handles `₹1,18,000.50`, `(250.00)` and `Cr`/`Dr`.
 2. **Type sanity check.** If the tenant named a type but the result is completely empty, the warning `document_type_mismatch` is added.

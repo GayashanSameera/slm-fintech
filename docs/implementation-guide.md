@@ -86,7 +86,7 @@ app/                                  THE PLATFORM (runs in Lambda; identical lo
 │   ├── worker.py                     one queued job end to end
 │   ├── pipeline.py                   Rung 0 or AI ladder -> checks -> reconciliation -> mask
 │   ├── preprocess/                   detect.py (real file type), pdf.py, image.py, docx.py
-│   ├── parsers/                      Rung 0: fingerprint, base (generic parser), coverage, reconcile,
+│   ├── parsers/                      Rung 0: fingerprint, generic (any layout), lexicon, base, coverage, reconcile,
 │   │                                 verify (Nova check), bank/<bank>_v<n>.py (layout descriptions)
 │   ├── schemas/                      one Pydantic model per document type + REGISTRY
 │   ├── classify.py, checks.py, masking.py, normalise.py, prompts.py, window.py
@@ -204,30 +204,37 @@ Three layers matter most when you change something:
 
 ## 8. Common tasks, step by step
 
-### 8.1 Add a Rung 0 parser for a real bank
+### 8.1 Support a new bank's statement layout
 
-This is the main way to cut AI cost: a parsed statement costs ~USD 0.0002, against ~USD 0.0006–0.007 through the AI ladder.
+This is the main way to cut AI cost: a parsed statement costs ~USD 0.0002 (one Nova Lite verification), against ~USD 0.0006–0.007 through the AI ladder. Most layouts need **no code at all**: the generic parser (`parsers/generic.py`) recognises the transaction table from its column titles and reads the header, rows and wrapped descriptions wherever they are printed. Check that first.
 
-1. **Get an anonymised sample** of the bank's digital e-statement into `samples/real/<bank>/` (gitignored).
-2. **Copy** `app/modules/extraction/parsers/bank/demo_bank_v1.py` to `<bank>_v1.py` and describe the layout: `parser_id`, `bank_name`, `markers` (text that appears only on this bank's page 1), `columns` (our field → the printed header label, in order), `header_labels`, `table_end_label`. The parsing logic itself is generic (`parsers/base.py`).
-3. **Register** the class in `parsers/fingerprint.py` `PARSERS`, newest layout version first.
-4. **Write a synthetic fixture** that copies the layout with invented data (extend `tests/helpers/simple_pdf.py`), and tests like `tests/unit/test_rung0.py`: accepted, multi-page, reconciliation clean (`tests/unit/test_reconcile.py` pattern), and rejected when a value is changed.
-5. **Try the real sample locally** (never committed):
+1. **Get an anonymised sample** of the bank's digital e-statement into `samples/real/<bank>/` (gitignored). Never commit a real statement.
+2. **Try it locally** (no AI, nothing leaves the laptop). Print counts and issue codes only, never values:
    ```python
    from app.modules.extraction.preprocess import preprocess
-   from app.modules.extraction.parsers.fingerprint import pick_parser
+   from app.modules.extraction.parsers.fingerprint import pick_parser, FINGERPRINT_PAGES
    from app.modules.extraction.parsers.reconcile import reconcile
    from app.modules.extraction.checks import run_checks
    from app.modules.extraction.parsers.coverage import coverage_problems
    from app.modules.extraction.schemas.bank_statement import BankStatement
    data = open("samples/real/<bank>/statement.pdf", "rb").read(); prep = preprocess(data)
-   st = BankStatement.model_validate(pick_parser(prep.pages[0]["text"]).parse(data))
    texts = [p["text"] for p in prep.pages]
-   print(run_checks("bank_statement", st), coverage_problems(st, texts), reconcile(st, texts))   # all must be []
+   parser = pick_parser("\n".join(texts[:FINGERPRINT_PAGES]))
+   st = BankStatement.model_validate(parser.parse(data))
+   print(parser.parser_id, len(st.transactions),
+         [f.code for f in run_checks("bank_statement", st)], coverage_problems(st, texts), reconcile(st, texts))
    ```
+   `generic_v1` with three empty lists: the layout is supported. Done.
+3. **The generic parser declines or a check fails?** The log line `generic_parser_declined` gives the reason (`no_column_titles`, `ambiguous_wrapped_line`, `second_opening_balance`, `two_amounts_in_one_cell`, ...). Usually the fix is a word list in `generic.py`:
+   - a column title it doesn't know ("Txn Particulars"): add it to `COLUMN_TITLES`;
+   - a header label it doesn't know ("A/C Holder"): add it to `HEADER_LABELS`;
+   - a balance or end-of-table line it doesn't know: `OPENING_LINE` / `CLOSING_LINE` / `TABLE_END` in `parsers/lexicon.py`;
+   - a date or number format: `leading_date` / `parse_amount` in `parsers/lexicon.py` (shared by the parser, coverage and reconciliation, so all three stay in step).
+4. **Reproduce the layout in a synthetic fixture** (`tests/helpers/statement_layouts.py`, invented data) and add it to `LAYOUTS`: `tests/unit/test_generic_parser.py` then proves it is read exactly and passes every gate. A layout that must NOT be parsed (ambiguous) gets a decline test.
+5. **Only if the layout really defeats the generic logic,** write a bank-specific parser: copy `parsers/bank/demo_bank_v1.py` to `<bank>_v1.py` (`parser_id`, `bank_name`, `markers` = text only this bank prints, `columns`, `header_labels`, `table_end_label`; override `parse_rows` if needed), and register it in `parsers/fingerprint.py` `PARSERS` **before** the generic parser (which must stay last). Keep its fingerprint strict.
 6. **Deploy** with `scripts/deploy.py prod app`, then smoke-test. The job's `parser_id` shows which parser read it.
 
-If a bank's layout defeats the generic logic (for example, amounts with `Cr`/`Dr` in one column), override `parse_rows` in the bank's class. Keep the fingerprint strict: a false match only costs a rejected attempt, but a loose one wastes time.
+What the generic parser already handles (each feature has a synthetic test): titles only on the first page or on every page; a header and footer on every page; bilingual titles and legacy Sinhala/Hindi fonts; diagonal watermarks; descriptions wrapped above and/or below the date line; Deposits before Withdrawals; one Amount column with a Type, Dr/Cr or sign; `0.00` / `—` in empty cells; dates such as `01-Aug-2026`, `03 Aug 2026`, `01 Aug`, `02/08`, `01.08.2026`; European amounts `10.481,44`; values printed right of, below or above their labels; B/F, Opening Balance, Total and day-heading lines. It **declines** (the statement goes to AI) when it can't be certain: a wrapped line equally near two rows, or several accounts in one file.
 
 ### 8.2 Add a document type
 

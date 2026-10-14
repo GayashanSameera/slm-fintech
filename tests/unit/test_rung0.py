@@ -161,9 +161,33 @@ def test_wrong_account_number_rejects():
 def test_unreadable_required_field_rejects():
     rows, *_ = _statement()
     answer = json.loads(demo_reading(rows))
-    answer["account_holder"] = None                                    # the model couldn't find it
+    answer["account_number"] = None                                    # the model couldn't find it
+    v, *_ = _verify(json.dumps(answer))
+    assert v.agree is False and v.issue_paths == ["account_number"]
+
+
+def test_optional_field_not_printed_is_not_a_mismatch():
+    # Many statements (e.g. Sri Lankan ones) print no IFSC; some layouts no branch or holder.
+    rows, *_ = _statement()
+    answer = json.loads(demo_reading(rows))
+    answer.update(ifsc=None, branch=None, account_holder=None)
+    v, *_ = _verify(json.dumps(answer))
+    assert v.agree is True
+
+
+def test_optional_field_read_differently_rejects():
+    rows, *_ = _statement()
+    answer = json.loads(demo_reading(rows))
+    answer["account_holder"] = "SOMEONE ELSE"
     v, *_ = _verify(json.dumps(answer))
     assert v.agree is False and v.issue_paths == ["account_holder"]
+
+
+def test_dates_without_a_year_take_the_statement_year():
+    from app.modules.extraction.parsers.verify import compare
+    parsed = {"account_number": "12345678", "period_from": "2026-08-01", "period_to": "2026-08-31"}
+    reading = {"account_number": "12345678", "period_from": "01 Aug", "period_to": "31 Aug 2026"}
+    assert compare(reading, parsed) == []
 
 
 def test_parser_that_missed_the_last_row_is_rejected():

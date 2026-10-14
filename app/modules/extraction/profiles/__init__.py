@@ -30,6 +30,8 @@ class Profile:
     rung0_enabled: bool
     rung0_verifier: str
     rung0_fallback_rung: int
+    # Bank statements longer than this many pages are read by AI in chunks of this size (pipeline.py).
+    statement_chunk_pages: int = 3
     extra: dict = field(default_factory=dict)
 
 
@@ -56,4 +58,5 @@ def load_profile(name: str = "default") -> Profile:
         rung0_enabled=bool(raw["rung0"]["enabled"]),
         rung0_verifier=raw["rung0"]["verifier"],
         rung0_fallback_rung=int(raw["rung0"]["fallback_rung"]),
+        statement_chunk_pages=int(raw.get("statement_chunk_pages", 3)),
     )
