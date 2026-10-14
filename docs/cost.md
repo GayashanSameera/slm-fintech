@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Version | 0.3 (infrastructure recalculated from the CloudFormation templates) |
+| Version | 0.4 (model cost recalculated after the accuracy work, §2.5; infrastructure unchanged from 0.3) |
 | Date | 2026-10-14 |
 | Design | [architecture.md](architecture.md) (Bedrock, us-east-1, Rung 0 parsers + model ladder) |
 | Target | NFR-K1: about USD 150 per month at 1,000 pages per day |
@@ -58,6 +58,52 @@ Anthropic documents a 10% premium for geographic routing over global routing, so
 | CloudWatch | Logs USD 0.50 per GB ingested, USD 0.03 per GB stored; USD 0.30 per custom metric; USD 0.10 per alarm |
 
 **Free tiers are not subtracted.** Lambda's always-free tier would cover all our Lambda use, so the real bill should come in a few dollars lower.
+
+## 2.5 Cost after the accuracy work (v0.4, measured 2026-10-14)
+
+The accuracy changes add free checks (identifier check digits, date order and period, opening and closing
+balance, text grounding) and change how scanned documents are read. Only two of them cost model tokens.
+Every figure below was measured with the real models on labelled test documents (`eval/`), at the list prices
+in §2.1, on deliberately degraded scans.
+
+| Change | Cost effect | Measured |
+|---|---|---|
+| Identifier, date, balance and grounding checks | none (plain Python) | USD 0 |
+| **Scanned bank statements read one page per call** (was 3 pages per call) | **cheaper**: fewer pages fail their checks and escalate to Sonnet | **USD 0.0016 per page, was 0.0028** (25 real bank layouts, 87 pages) |
+| Targeted page repair (a failed whole-statement check re-reads only the pages it points at, with Sonnet) | included in the line above; Sonnet is 42% of that cost | included |
+| Second reading of **scanned invoices, payslips, identity documents, KYC forms** | **more expensive**, only on scans | USD 0.0044 per document, was 0.0004 (digital documents: unchanged, no second reading) |
+| Second reading of **scanned bank statements** | **off by default**: 5 to 7 times the page cost, no measured accuracy gain | USD 0.008 to 0.012 per page if switched on |
+
+**Monthly model cost, base case (22,000 pages, 22 business days).** The unchanged lines keep the §4.1 assumptions
+(including a 5% Sonnet escalation rate for pages not measured here). Assumed split of non-statement pages: half are scans.
+
+| Line | Pages | Cost per page | Monthly |
+|---|---|---|---|
+| Rung 0 verification by Nova Lite | 8,600 | 0.00025 | 2 |
+| Digital statements without a parser, plus parser results the verifier rejects | 3,000 | 0.0025 | 7.5 |
+| **Scanned bank statements** (page by page) | 4,600 | **0.0016** | **7.4** |
+| Invoices, payslips, identity, KYC: digital | 3,300 | 0.0025 | 8.3 |
+| Invoices, payslips, identity, KYC: **scanned, with second reading** | 3,300 | 0.0025 + 0.0040 | **21.5** |
+| Type detection and prompt-cache writes | | | 5 |
+| **Model total** | | | **about USD 52** |
+
+| Scenario | Model per month | All-in with infrastructure (USD 20 gross) |
+|---|---|---|
+| Before the accuracy work (v0.3) | 36 | 56 |
+| **Now, defaults** | **~52** | **~72** |
+| Second reading of non-statement scans switched off | ~39 | ~59 |
+| Second reading of scanned statements also switched on | ~83 | ~103 |
+
+All scenarios stay under the USD 150 target (NFR-K1). The share of scans among non-statement documents is the
+biggest unknown: every 10 points move the total by about USD 2.6. The first month of real traffic replaces these
+assumptions: each job already returns `usage.estimated_cost_usd`.
+
+**The retention lock adds no measurable cost:** one Lambda invocation per deployment and a small log group.
+
+**Accuracy measured with the same runs (honest limits).** Digital bank statements: every row is proven against the PDF
+text. Scanned statements, 25 real layouts degraded hard, default configuration: 99.9% of fields right, 22 of 25
+documents fully right, 2 documents with an error and no warning (a closing balance left out, and reference text
+invented on a page without any). Those two are open items, not covered by a check yet.
 
 ## 3. Workload assumptions
 

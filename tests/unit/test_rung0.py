@@ -108,6 +108,7 @@ def test_requested_other_type_skips_rung0():
     gw = FakeGateway().queue("{}")
     out = _run(demo_statement(sample_transactions(3)), gw, requested_type="invoice")
     assert out.method == "ai" and out.doc_type == "invoice"
+    # A DIGITAL document: its values are proven by the text (grounding.py), so no second reading.
     assert [c["model_id"] for c in gw.calls] == [HAIKU]
 
 

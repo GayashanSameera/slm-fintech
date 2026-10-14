@@ -29,7 +29,7 @@ NOVA, HAIKU, SONNET = (r.model for r in PROFILE.ladder)
 # A valid invoice whose numbers add up (subtotal 1000 + 18% GST = 1180).
 GOOD_INVOICE = json.dumps({
     "invoice_number": "INV-1", "invoice_date": "07/09/2026",
-    "seller": {"name": "Demo Traders", "pan": "ABCDE1234F"},
+    "seller": {"name": "Demo Traders", "pan": "ABCCE1234F"},
     "line_items": [{"description": "Widget", "amount": "1000.00"}],
     "subtotal": "1000.00", "cgst": "90.00", "sgst": "90.00", "total": "1180.00",
 })
@@ -38,7 +38,11 @@ WRONG_TOTAL = GOOD_INVOICE.replace('"total": "1180.00"', '"total": "1181.00"')
 BAD_JSON = "Sure! Here is the invoice: {invoice_number: INV-1"
 
 # A page as preprocessing would produce it (text only; the fake ignores content).
-PAGES = [{"text": "TAX INVOICE ...", "image": None, "scanned": False}]
+# The text layer prints every value the invoices above contain: digital pages are also checked
+# against their text (grounding.py), so a page that does not print "1180.00" would fail that check.
+PAGES = [{"text": "TAX INVOICE No INV-1 Date 07/09/2026 Seller Demo Traders PAN ABCCE1234F "
+                  "Widget 1000.00 CGST 90.00 SGST 90.00 Total 1180.00 (draft 1181.00)",
+          "image": None, "scanned": False}]
 
 
 def _models(gw: FakeGateway) -> list[tuple[str, bool]]:
@@ -125,7 +129,7 @@ def _extract(gw: FakeGateway, requested_type: str | None, tenant: TenantSettings
 
 def test_extract_document_masks_and_reports_warnings():
     gw = FakeGateway().queue(WRONG_TOTAL, WRONG_TOTAL, WRONG_TOTAL)
-    out = _extract(gw, "invoice")
+    out = _extract(gw, "invoice")   # all three attempts fail the checks, so no second reading is made
     assert out.method == "ai" and out.doc_type_source == "client"
     assert out.warnings == ["total_mismatch"]
     assert out.result["seller"]["pan"] == "XXXXXX234F"   # masked before it leaves the pipeline

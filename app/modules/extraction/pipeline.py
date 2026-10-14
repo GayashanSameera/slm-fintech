@@ -25,6 +25,7 @@ the pipeline easy to unit-test with the FakeGateway.
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -36,15 +37,27 @@ from app.gateway import GatewayResult, ModelGateway
 
 from .checks import DOCUMENT_ONLY, CheckFailure, run_checks
 from .classify import classify
+from .crossread import cross_read
+from .grounding import ungrounded_fields
 from .masking import has_aadhaar_markers, mask
 from .normalise import to_result
 from .parsers import try_rung0
+from .preprocess.image import enhanced_pages
 from .parsers.reconcile import reconcile, reconcile_rows
 from .profiles import Profile
 from .prompts import instruction, strip_code_fences, system_prompt
 from .schemas import REGISTRY
 
 log = get_logger(__name__)
+
+# Bank statement fields that the running-balance arithmetic already proves (checks.py). The second
+# reading of a SCANNED statement skips them and compares what arithmetic cannot prove: dates,
+# descriptions, references and the header text.
+STATEMENT_PROVEN_FIELDS = frozenset({"debit", "credit", "balance", "opening_balance", "closing_balance"})
+# Header fields are printed on the FIRST page only. On every later page a reader that "finds" an
+# account number or a period is inventing it (measured: these disputes caused most of the expensive
+# arbitrations), so later pages are compared on their rows alone.
+STATEMENT_HEADER_FIELDS = frozenset({"account_holder", "account_number", "ifsc", "branch", "period_from", "period_to"})
 
 
 @dataclass
@@ -126,10 +139,33 @@ def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> li
     the top, the codes are returned as warnings. Messages name rows and fields only.
     Scanned pages have no text layer, so nothing can be reconciled for them.
     """
-    if doc_type != "bank_statement" or not _digital(pages):
+    if not _digital(pages):
         return []
+    if doc_type != "bank_statement":
+        # Every other type: each value must be printed in the text (grounding.py).
+        return grounding_failure(ungrounded_fields(parsed.model_dump(mode="json"), [p["text"] for p in pages]))
     issues = reconcile(parsed, [p["text"] for p in pages])
     return _reconciliation_failure(issues)
+
+
+def grounding_failure(paths: list[str]) -> list[CheckFailure]:
+    """Values the document text does not contain, as one failed check naming the FIELDS (not values)."""
+    if not paths:
+        return []
+    return [CheckFailure("text_grounding_failed",
+                         "These fields are not printed in the document text: " + ", ".join(paths[:15])
+                         + ". Copy each value exactly as printed; leave a field out if it is not there.",
+                         fields=tuple(paths[:10]))]
+
+
+def warning_codes(failures: list[CheckFailure], unresolved: list[str] = ()) -> list[str]:
+    """Stored warnings: the failure code, plus '<code>:<field>' for failures that name fields, plus
+    'unverified_field:<path>' for fields on which the independent readings could not agree."""
+    out: list[str] = []
+    for f in failures:
+        out += [f"{f.code}:{path}" for path in f.fields] if f.fields else [f.code]
+    out += [f"unverified_field:{path}" for path in list(unresolved)[:10]]
+    return sorted(set(out))
 
 
 def _reconciliation_failure(issues: list[str]) -> list[CheckFailure]:
@@ -181,17 +217,52 @@ def _climb(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGat
 def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway,
                start_rung: int | None = None) -> tuple[BaseModel, list[CheckFailure], str, list[GatewayResult]]:
     """Gate 3 and climbing. Returns (best parsed result, its failures, model id, calls)."""
+    return ladder_core(doc_type, pages, profile, gateway, start_rung)[:4]
+
+
+def ladder_core(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway,
+                start_rung: int | None = None, second_reading: bool = False):
+    """The ladder, plus (for a long SCANNED bank statement, when `second_reading` is on) an
+    independent second reading of every chunk. Returns (parsed, failures, model id, calls,
+    unresolved field paths)."""
     start = profile.start_rung.get(doc_type, 1) if start_rung is None else start_rung
-    if doc_type == "bank_statement" and len(pages) > profile.statement_chunk_pages:
-        return run_chunked_statement(pages, profile, gateway, start)
-    return _climb(doc_type, pages, profile, gateway, start,
-                  check=lambda parsed: run_checks(doc_type, parsed)
-                  + text_reconciliation_failures(doc_type, parsed, pages))
+    # Scanned statements are read one page per call; digital ones (rare here: parsers or AI with text
+    # reconciliation) in chunks of statement_chunk_pages.
+    scanned = doc_type == "bank_statement" and not _digital(pages)
+    size = profile.scan_chunk_pages if scanned else profile.statement_chunk_pages
+    if doc_type == "bank_statement" and len(pages) > size:
+        return run_chunked_statement(pages, profile, gateway, start, second_reading, size)
+    check = lambda parsed: run_checks(doc_type, parsed) + text_reconciliation_failures(doc_type, parsed, pages)  # noqa: E731
+    parsed, failures, model_id, calls = _climb(doc_type, pages, profile, gateway, start, check=check)
+    unresolved: list[str] = []
+    if second_reading and not [f for f in failures if f.code not in DOCUMENT_ONLY]:     # a short scanned statement
+        cr = second_read(doc_type, pages, parsed, model_id, profile, gateway, check, scanned_statement=scanned)
+        parsed, failures, model_id, unresolved = cr.parsed, cr.failures, cr.model_id, cr.unresolved
+        calls = calls + cr.calls
+        if cr.status == "unavailable":
+            unresolved = ["second_reading"]
+    return parsed, failures, model_id, calls, unresolved
+
+
+def second_read(doc_type: str, pages: list[dict], parsed, model_id: str, profile: Profile, gateway: ModelGateway, check,
+                scanned_statement: bool = False, first_chunk: bool = True):
+    """Independent second reading of `pages` (crossread.py). For a bank statement the amounts are
+    not compared: the running balance proves them, so the readers only argue about dates,
+    descriptions and references."""
+    return cross_read(
+        doc_type=doc_type, pages=pages, parsed=parsed, model_id=model_id, gateway=gateway,
+        readers=list(profile.crossread_readers), arbiters=list(profile.crossread_arbiters), extra_check=check,
+        ignore=((STATEMENT_PROVEN_FIELDS if first_chunk else STATEMENT_PROVEN_FIELDS | STATEMENT_HEADER_FIELDS)
+                if doc_type == "bank_statement" else frozenset()),
+        # A scanned statement page is re-read by the profile's scan reader on an enhanced picture.
+        reader_model=profile.scan_reader if scanned_statement else None,
+        reader_pages=enhanced_pages(pages) if scanned_statement else None)
 
 
 # --- long bank statements: chunks ------------------------------------------------------------
 
-def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGateway, start: int):
+def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGateway, start: int,
+                          second_reading: bool = False, size: int | None = None):
     """A long bank statement, read a few pages at a time.
 
     WHY: one model answer has an output limit (8000 tokens, roughly 120 rows). A 15-page
@@ -207,7 +278,7 @@ def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGat
     and the WHOLE statement is checked again, including the balances across chunk borders and
     opening + credits - debits = closing. Remaining problems become warnings.
     """
-    size = profile.statement_chunk_pages
+    size = size or profile.statement_chunk_pages
     total = len(pages)
     chunks = [(i, pages[i:i + size]) for i in range(0, total, size)]
     digital = _digital(pages)
@@ -222,9 +293,20 @@ def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGat
 
     def read(chunk):
         i, chunk_pages = chunk
-        return _climb("bank_statement", chunk_pages, profile, gateway, start,
-                      check=lambda parsed: check_chunk(parsed, chunk_pages),
-                      chunk=(i + 1, i + len(chunk_pages), total))
+        check = lambda parsed: check_chunk(parsed, chunk_pages)          # noqa: E731
+        parsed, failures, model_id, chunk_calls = _climb(
+            "bank_statement", chunk_pages, profile, gateway, start, check=check,
+            chunk=(i + 1, i + len(chunk_pages), total))
+        unresolved: list[str] = []
+        # A SCANNED chunk that passed its checks is read a second time by a different model.
+        if second_reading and not [f for f in failures if f.code not in DOCUMENT_ONLY]:
+            cr = second_read("bank_statement", chunk_pages, parsed, model_id, profile, gateway, check,
+                             scanned_statement=not digital, first_chunk=(i == 0))
+            parsed, failures, model_id, unresolved = cr.parsed, cr.failures, cr.model_id, cr.unresolved
+            chunk_calls = chunk_calls + cr.calls
+            if cr.status == "unavailable":
+                unresolved = [f"chunk_{i // size + 1}_second_reading"]
+        return parsed, failures, model_id, chunk_calls, unresolved
 
     calls: list[GatewayResult] = []
     results = []
@@ -254,10 +336,77 @@ def run_chunked_statement(pages: list[dict], profile: Profile, gateway: ModelGat
 
     merged = merge_statement_chunks([r[0] for r in results])
     failures = run_checks("bank_statement", merged) + text_reconciliation_failures("bank_statement", merged, pages)
-    # The strongest model any chunk needed is reported as the result's model.
+    # Disputed fields are reported with their row number in the WHOLE statement, not in the chunk.
+    unresolved: list[str] = []
+    offset = 0
+    for r in results:
+        unresolved += [re.sub(r"transactions\[(\d+)\]", lambda m, o=offset: f"transactions[{int(m.group(1)) + o}]", path)
+                       for path in r[4]]
+        offset += len(r[0].transactions)
     rank = {r.model: i for i, r in enumerate(profile.ladder)}
+
+    # ---- Targeted repair ---------------------------------------------------------------------
+    # The whole-statement check can find what no single chunk could see: a balance that does not
+    # continue across a page border, or an opening/closing balance that does not fit the rows. Only
+    # the pages those problems point at are read again, by the STRONGEST model (never the whole
+    # statement), and the repaired statement is kept only if it has fewer problems than before.
+    blocking_now = [f for f in failures if f.code not in DOCUMENT_ONLY]
+    top = len(profile.ladder) - 1
+    if blocking_now:
+        redo = [i for i in implicated_chunks(blocking_now, results) if rank.get(results[i][2], -1) < top]
+        if redo:
+            repaired = list(results)
+            for i in redo:
+                chunk_index, chunk_pages = chunks[i]
+                try:
+                    parsed_i, failures_i, model_i, calls_i = _climb(
+                        "bank_statement", chunk_pages, profile, gateway, top,
+                        check=lambda parsed, cp=chunk_pages: check_chunk(parsed, cp),
+                        chunk=(chunk_index + 1, chunk_index + len(chunk_pages), total))
+                except JobError as e:
+                    calls += getattr(e, "calls", [])
+                    continue
+                calls += calls_i
+                repaired[i] = (parsed_i, failures_i, model_i, calls_i, [])
+            merged2 = merge_statement_chunks([r[0] for r in repaired])
+            failures2 = run_checks("bank_statement", merged2) + text_reconciliation_failures("bank_statement", merged2, pages)
+            if len([f for f in failures2 if f.code not in DOCUMENT_ONLY]) < len(blocking_now):
+                log.info("statement_repaired", count=len(redo), pages=len(redo))
+                merged, failures, results = merged2, failures2, repaired
+                unresolved = []
+                offset = 0
+                for r in results:
+                    unresolved += [re.sub(r"transactions\[(\d+)\]",
+                                          lambda m, o=offset: f"transactions[{int(m.group(1)) + o}]", path) for path in r[4]]
+                    offset += len(r[0].transactions)
+    # The strongest model any chunk needed is reported as the result's model.
     model_id = max((r[2] for r in results), key=lambda m: rank.get(m, -1))
-    return merged, failures, model_id, calls
+    return merged, failures, model_id, calls, unresolved
+
+
+def implicated_chunks(failures: list[CheckFailure], results: list) -> list[int]:
+    """Indexes of the chunks that the whole-statement failures point at.
+
+    A failure that names rows implicates the chunks those rows are in (rows are numbered over the
+    whole statement). An opening/closing balance that does not fit implicates the FIRST and LAST
+    chunk, where those lines are printed. Everything else cannot be placed: no chunk is chosen."""
+    counts = [len(r[0].transactions) for r in results]
+    chosen: set[int] = set()
+    for f in failures:
+        if f.code in ("closing_balance_mismatch",):
+            chosen |= {0, len(results) - 1}
+        elif f.code == "closing_not_last_balance":
+            chosen.add(len(results) - 1)        # the closing line is printed on the last page
+        elif f.code == "opening_not_first_row":
+            chosen.add(0)                       # the opening line is printed on the first page
+        for row in f.rows:
+            seen = 0
+            for index, n in enumerate(counts):
+                seen += n
+                if row <= seen:
+                    chosen.add(index)
+                    break
+    return sorted(chosen)
 
 
 def merge_statement_chunks(parts: list) -> BaseModel:
@@ -326,14 +475,36 @@ def extract_document(*, data: bytes, prepared, requested_type: str | None, tenan
     # the cheapest model has already looked at it as the verifier.
     start = profile.rung0_fallback_rung if (doc_type == "bank_statement" and rung0_tried) else None
     try:
-        parsed, failures, model_id, ladder_calls = run_ladder(doc_type, prepared.pages, profile, gateway, start)
+        scanned_statement = (doc_type == "bank_statement" and not _digital(prepared.pages)
+                             and profile.crossread_enabled and profile.scan_second_reading
+                             and tenant.verification_mode == "ai")
+        parsed, failures, model_id, ladder_calls, unresolved = ladder_core(
+            doc_type, prepared.pages, profile, gateway, start, second_reading=scanned_statement)
     except JobError as e:
         e.calls = calls + getattr(e, "calls", [])
         raise
     calls += ladder_calls
 
+    # ---- Independent second reading (crossread.py) ---------------------------------------------
+    # Only for an answer that PASSED its checks (otherwise it is already reported with warnings),
+    # not for DIGITAL documents (every value was already proven to be printed in the text:
+    # grounding.py; set crossread.digital to true in the profile to read those twice as well), and
+    # not for tenants who chose checks_only. SCANNED bank statements get their second reading
+    # inside ladder_core (per chunk) and compare only dates, descriptions and references.
+    if (profile.crossread_enabled and not scanned_statement and doc_type != "bank_statement"
+            and tenant.verification_mode == "ai"
+            and (profile.crossread_digital or not _digital(prepared.pages))
+            and not [f for f in failures if f.code not in DOCUMENT_ONLY]):
+        cr = second_read(doc_type, prepared.pages, parsed, model_id, profile, gateway,
+                         lambda candidate: run_checks(doc_type, candidate)
+                         + text_reconciliation_failures(doc_type, candidate, prepared.pages))
+        calls += cr.calls
+        parsed, failures, model_id, unresolved = cr.parsed, cr.failures, cr.model_id, cr.unresolved
+        if cr.status == "unavailable":
+            unresolved = ["crossread"]            # no second opinion was possible: say so, never pass silently
+
     result = to_result(parsed)
-    warnings = [f.code for f in failures]
+    warnings = warning_codes(failures, unresolved)
     # The tenant said "invoice" but the model found nothing: probably the wrong type (§6.0).
     if source == "client" and not any(v not in (None, [], {}) for v in result.values()):
         warnings.append("document_type_mismatch")
@@ -342,6 +513,6 @@ def extract_document(*, data: bytes, prepared, requested_type: str | None, tenan
     result = mask(result, strict_aadhaar=strict, unmasked_kinds=set(tenant.unmasked_kinds))
     return ExtractionOutcome(
         doc_type=doc_type, doc_type_source=source, doc_type_confidence=confidence,
-        result=result, warnings=sorted(set(warnings)), method="ai", model_id=model_id,
+        result=result, warnings=warnings, method="ai", model_id=model_id,
         parser_id=None, verified_by=None, schema_version=REGISTRY[doc_type].version, calls=calls,
     )

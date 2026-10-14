@@ -28,7 +28,7 @@ from tests.helpers.simple_pdf import demo_reading, demo_statement, sample_transa
 
 GOOD_INVOICE = json.dumps({
     "invoice_number": "INV-1", "invoice_date": "07/09/2026",
-    "seller": {"name": "Demo Traders", "pan": "ABCDE1234F"},
+    "seller": {"name": "Demo Traders", "pan": "ABCCE1234F"},
     "line_items": [{"description": "Widget", "amount": "1000.00"}],
     "subtotal": "1000.00", "cgst": "90.00", "sgst": "90.00", "total": "1180.00",
 })
@@ -98,7 +98,7 @@ def test_health_needs_no_key(client):
 def test_direct_flow_end_to_end(client, tenant, fake_gateway):
     tenant_id, api_key = tenant
     png = _png()
-    fake_gateway.queue(GOOD_INVOICE)
+    fake_gateway.queue(GOOD_INVOICE, GOOD_INVOICE)   # answer + the independent second reading (agrees)
 
     # Stage 4a: file in the request (base64 JSON). wait=0 -> answer at once with 202.
     resp = client.post("/v1/extractions?wait=0", headers=_auth(api_key), json={
@@ -126,12 +126,13 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
                                    "estimated_cost_usd", "by_model"]
     assert body["result"]["seller"]["pan"] == "XXXXXX234F"            # stage 11: masked
     assert body["page_count"] == 1 and body["model_id"].startswith("us.anthropic.claude-haiku")
-    # Token usage of the job (FakeGateway reports 100 in / 50 out per call): one Haiku call.
-    # Haiku list price: 100 * 0.11 + 50 * 0.55 per 1M tokens = USD 0.0000385.
-    assert body["usage"] == {"model_calls": 1, "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0,
-                             "estimated_cost_usd": 3.9e-05,
-                             "by_model": [{"model_id": body["model_id"], "calls": 1, "input_tokens": 100,
-                                           "output_tokens": 50, "cache_read_tokens": 0, "estimated_cost_usd": 3.9e-05}]}
+    # Token usage of the job (FakeGateway reports 100 in / 50 out per call): the Haiku extraction plus
+    # the independent second reading by Nova Lite (crossread.py).
+    # Haiku: 100 * 0.11 + 50 * 0.55 per 1M = USD 0.0000385; Nova: 100 * 0.06 + 50 * 0.24 per 1M = USD 0.000018.
+    usage = body["usage"]
+    assert (usage["model_calls"], usage["input_tokens"], usage["output_tokens"]) == (2, 200, 100)
+    assert usage["estimated_cost_usd"] == 5.7e-05
+    assert [m["model_id"] for m in usage["by_model"]] == [body["model_id"], "us.amazon.nova-lite-v1:0"]
 
     # Stage 12: the source file is deleted after processing (no training consent).
     assert not Blobs(tenant_id).exists(keys.source_key(tenant_id, job["id"]))
@@ -236,7 +237,7 @@ def test_presigned_flow_end_to_end(client, tenant, fake_gateway):
     from app.intake import handle_event
 
     tenant_id, api_key = tenant
-    fake_gateway.queue(GOOD_INVOICE)
+    fake_gateway.queue(GOOD_INVOICE, GOOD_INVOICE)   # answer + the independent second reading (agrees)
     job_id = _presigned_upload(client, tenant_id, api_key, _png(), "invoice")
     key = keys.source_key(tenant_id, job_id)
 
@@ -305,7 +306,7 @@ def test_other_tenant_gets_404_for_every_action(client, tenant, fake_gateway):
     from app.storage.tenants import create_api_key, create_tenant
 
     tenant_id, api_key = tenant
-    fake_gateway.queue(GOOD_INVOICE)
+    fake_gateway.queue(GOOD_INVOICE, GOOD_INVOICE)   # answer + the independent second reading (agrees)
     resp = client.post("/v1/extractions?wait=0", headers=_auth(api_key), json={
         "document_type": "invoice", "file": {"content_base64": base64.b64encode(_png()).decode()}})
     job_id = resp.json()["id"]
@@ -426,7 +427,7 @@ def test_expired_job_is_invisible_before_ttl_deletes_it(client, tenant, fake_gat
     import app.storage.jobs as jobs
 
     _, api_key = tenant
-    fake_gateway.queue(GOOD_INVOICE)
+    fake_gateway.queue(GOOD_INVOICE, GOOD_INVOICE)   # answer + the independent second reading (agrees)
     png64 = base64.b64encode(_png()).decode()
     resp = client.post("/v1/extractions?wait=0", headers=_auth(api_key),
                        json={"document_type": "invoice", "file": {"content_base64": png64}})
@@ -440,7 +441,7 @@ def test_expired_job_is_invisible_before_ttl_deletes_it(client, tenant, fake_gat
     assert client.get(f"/v1/extractions/{job_id}", headers=_auth(api_key)).status_code == 404
     assert client.get("/v1/extractions", headers=_auth(api_key)).json()["data"] == []
     # ...and the same file is processed again instead of returning the expired result.
-    fake_gateway.queue(GOOD_INVOICE)
+    fake_gateway.queue(GOOD_INVOICE, GOOD_INVOICE)   # answer + the independent second reading (agrees)
     again = client.post("/v1/extractions?wait=0", headers=_auth(api_key),
                         json={"document_type": "invoice", "file": {"content_base64": png64}})
     assert again.status_code == 202 and again.json()["id"] != job_id

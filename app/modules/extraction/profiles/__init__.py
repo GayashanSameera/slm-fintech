@@ -32,6 +32,16 @@ class Profile:
     rung0_fallback_rung: int
     # Bank statements longer than this many pages are read by AI in chunks of this size (pipeline.py).
     statement_chunk_pages: int = 3
+    # Independent second reading + 2-of-3 vote for documents without a text proof (crossread.py).
+    crossread_enabled: bool = False
+    crossread_digital: bool = False          # also read DIGITAL documents twice (text grounding already proves them)
+    crossread_readers: tuple[str, ...] = ()
+    crossread_arbiters: tuple[str, ...] = ()
+    # SCANNED bank statements are read one page per call (measured far more accurate than 3-page chunks)
+    # and each page gets its second reading from this model, on an enhanced picture of the page.
+    scan_chunk_pages: int = 1
+    scan_reader: str | None = None
+    scan_second_reading: bool = False     # opt-in: measured about 5x the cost for no measured gain (see the YAML)
     extra: dict = field(default_factory=dict)
 
 
@@ -59,4 +69,11 @@ def load_profile(name: str = "default") -> Profile:
         rung0_verifier=raw["rung0"]["verifier"],
         rung0_fallback_rung=int(raw["rung0"]["fallback_rung"]),
         statement_chunk_pages=int(raw.get("statement_chunk_pages", 3)),
+        crossread_enabled=bool(raw.get("crossread", {}).get("enabled", False)),
+        scan_chunk_pages=int(raw.get("scan_statements", {}).get("chunk_pages", 1)),
+        scan_second_reading=bool(raw.get("scan_statements", {}).get("second_reading", False)),
+        scan_reader=raw.get("scan_statements", {}).get("reader"),
+        crossread_digital=bool(raw.get("crossread", {}).get("digital", False)),
+        crossread_readers=tuple(raw.get("crossread", {}).get("readers", [])),
+        crossread_arbiters=tuple(raw.get("crossread", {}).get("arbiters", [])),
     )

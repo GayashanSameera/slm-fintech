@@ -314,7 +314,7 @@ Things the tests can't prove (moto doesn't evaluate IAM, and the fake model can'
 | Per-request audit, exact retention, key rotation/revocation | ✅ |
 | Infrastructure: 5 stacks in `lyndev` prod, KMS, GuardDuty, alarms, budget | ✅ (WAF switched **off** on 2026-10-14 to save cost: `EnableWaf` in `params/prod.json`) |
 | Alert email for alarms | ⛔ not set (`AlertEmail` in `params/prod.json`) |
-| Bedrock data-retention mode `none` | ⛔ not set (account-wide decision) |
+| Bedrock data-retention mode `none` | ✅ set to `none` in us-east-1, us-east-2 and us-west-2 on 2026-10-14. `security.yaml` now sets it on every deployment (custom resource `BedrockRetentionNone`) and fails the deployment if any Region reads back anything else. That template change is written and linted but **not yet deployed**. An SCP is not possible in the shared account |
 | API Gateway timeout quota (wait 25 s → 40 s) | ⛔ to request |
 | CI/CD pipeline (GitHub Actions + OIDC) | ⛔ not built: deploys are manual with `deploy.py` |
 | Per-tenant throttling (usage plans) | ⛔ not built |

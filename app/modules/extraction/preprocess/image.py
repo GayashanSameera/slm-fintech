@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from app.core.errors import JobError
 
@@ -53,3 +53,21 @@ def prepare_image(data: bytes) -> bytes:
     if max(img.size) < MIN_LONG_EDGE:
         raise JobError("image_resolution_too_low")
     return to_jpeg(downscale(img, SCAN_MAX_EDGE))
+
+
+def enhanced_view(jpeg: bytes) -> bytes:
+    """A second, differently processed rendering of the same page (same size, so the same cost).
+
+    Used for the SECOND reading of a scanned statement page: stretching the contrast and sharpening the
+    edges changes how faint or blurred characters look, so a character the first reading misread because
+    of noise is read from a different picture. (Two readings of the very same pixels by the same model
+    tend to repeat the same slip.)
+    """
+    img = ImageOps.autocontrast(Image.open(io.BytesIO(jpeg)).convert("L"), cutoff=1)
+    img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=2))
+    return to_jpeg(img, quality=88)
+
+
+def enhanced_pages(pages: list[dict]) -> list[dict]:
+    """The pages with their images replaced by enhanced_view (text layers, if any, are kept)."""
+    return [{**p, "image": enhanced_view(p["image"])} if p.get("image") else p for p in pages]

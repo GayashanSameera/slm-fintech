@@ -48,3 +48,6 @@ data/
 *~
 .DS_Store
 Thumbs.db
+
+# --- Accuracy evaluation reports (regenerate with python -m eval.run / eval.inject) --------
+eval/results/

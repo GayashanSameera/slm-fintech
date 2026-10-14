@@ -15,7 +15,7 @@
 # which rung is accurate enough for each type (architecture §3.2, §10.3).
 # ------------------------------------------------------------------------------
 id: default-2026-10
-prompt_version: 1
+prompt_version: 2
 
 ladder:                                    # index 0 = first AI rung (Nova Lite)
   - model: us.amazon.nova-lite-v1:0
@@ -51,3 +51,39 @@ rung0:                                     # Python parsers, verified by AI (§3
   enabled: true
   verifier: us.amazon.nova-lite-v1:0
   fallback_rung: 1                         # a rejected parser result enters the ladder at Haiku 5.5
+
+# Independent second reading for every AI-read document except bank statements (crossread.py).
+# A second model reads the document WITHOUT seeing the first answer; any disagreement is settled
+# by a third, stronger model with a 2-of-3 vote per field; fields where all three differ are
+# reported as warnings "unverified_field:<path>". Models already used are skipped, so the readers
+# are always different. Cost: one cheap extra call per document (about USD 0.0004 with Nova Lite),
+# a third call only when the first two disagree. Tenants with verification_mode "checks_only" skip it.
+crossread:
+  enabled: true
+  digital: false                           # digital documents are already proven by text grounding
+  readers:                                 # preference order for the second reader
+    - us.amazon.nova-lite-v1:0
+    - us.anthropic.claude-haiku-5-5
+  arbiters:                                # preference order for the tie-breaker
+    - us.anthropic.claude-sonnet-5-5
+    - us.anthropic.claude-haiku-5-5
+
+# SCANNED bank statements (no text layer). Measured on degraded scans of 40-70 row statements:
+#   * Claude Haiku reading ONE PAGE per call: every row, date, description and reference right;
+#   * the same model reading 3 pages per call: rows 44-49 of one statement came back with wrong
+#     dates and descriptions and NO check noticed (the balances were right).
+# So scanned statements are read one page per call (same cost: the input tokens are the same,
+# and pages are read in parallel). Each page then gets a second reading by `reader` on an
+# enhanced rendering of the page (a different picture, not the same pixels twice); disagreements go
+# to the arbiter (Sonnet) for that page only. Nova Lite was tried as the second reader and rejected:
+# it misreads text on dense scans (CHQ as CHO, digits in references).
+#
+# THE SECOND READING IS OFF BY DEFAULT (cost). Measured on 25 real bank layouts rendered as hard
+# scans (87 pages): page-by-page reading costs about USD 0.0017 per page; adding the second reading
+# raised that to USD 0.008-0.012 per page (Sonnet arbitrations were 80-86% of the cost) and did not
+# remove the remaining errors. Turn it on only for a tenant or an environment that wants the extra
+# assurance and accepts roughly 5x the model cost of scanned statements.
+scan_statements:
+  chunk_pages: 1
+  second_reading: false
+  reader: us.anthropic.claude-haiku-5-5
