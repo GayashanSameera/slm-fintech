@@ -98,6 +98,22 @@ def check_bank_statement(st) -> list[CheckFailure]:
 
     if st.ifsc and not IFSC_RE.match(st.ifsc.replace(" ", "").upper()):
         out.append(CheckFailure("ifsc_format", "The IFSC code does not have a valid format."))
+
+    # 3. Complete rows. A row without a date, or without a balance when other rows have one, was
+    #    misread (or invented: models guess when a page is unreadable). Without balances the
+    #    arithmetic above proves nothing, so a statement that prints none is reported too.
+    no_date = [i for i, t in enumerate(txns, start=1) if t.date is None]
+    if no_date:
+        out.append(CheckFailure("transaction_missing_date",
+                                f"Rows {', '.join(map(str, no_date[:10]))} have no date. Every row has a date: read it."))
+    with_balance = [t for t in txns if t.balance is not None]
+    if with_balance and len(with_balance) < len(txns):
+        missing = [i for i, t in enumerate(txns, start=1) if t.balance is None]
+        out.append(CheckFailure("transaction_missing_balance",
+                                f"Rows {', '.join(map(str, missing[:10]))} have no balance, but other rows do."))
+    if txns and not with_balance:
+        out.append(CheckFailure("running_balance_not_printed",
+                                "No row has a running balance, so the amounts could not be checked."))
     return out
 
 
@@ -153,7 +169,7 @@ _CHECKS = {
 # Failures that say something about the DOCUMENT, not about the extraction.
 # Re-extracting with a stronger model would not change them, so they never
 # trigger a climb; they are only reported as warnings.
-DOCUMENT_ONLY = {"document_expired", "required_fields_missing"}
+DOCUMENT_ONLY = {"document_expired", "required_fields_missing", "running_balance_not_printed"}
 
 
 def run_checks(doc_type: str, parsed) -> list[CheckFailure]:

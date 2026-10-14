@@ -19,6 +19,11 @@ Image.MAX_IMAGE_PIXELS = 50_000_000
 
 SCAN_MAX_EDGE = 1568      # scans and photos: enough detail for small print
 DIGITAL_MAX_EDGE = 1000   # digital PDF pages: the text layer carries the detail
+# Below this many pixels on the LONG side, the small print of a financial document is a few pixels
+# tall: no model can read it, and models then GUESS plausible values (tested 2026-10-14 with
+# 262x300 thumbnails of statements: rows came back with invented amounts and no warning). Such
+# images are refused instead. An A4 page photographed or scanned at a readable size is far above it.
+MIN_LONG_EDGE = 1000
 
 
 def to_jpeg(img: Image.Image, quality: int = 85) -> bytes:
@@ -45,4 +50,6 @@ def prepare_image(data: bytes) -> bytes:
     except Exception:
         raise JobError("corrupt_file") from None
     img = ImageOps.exif_transpose(img)     # phone photos store rotation in EXIF metadata
+    if max(img.size) < MIN_LONG_EDGE:
+        raise JobError("image_resolution_too_low")
     return to_jpeg(downscale(img, SCAN_MAX_EDGE))

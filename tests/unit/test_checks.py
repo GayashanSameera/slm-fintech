@@ -71,7 +71,8 @@ def _statement(rows: list[tuple[str | None, str | None, str]], closing: str) -> 
     """A statement opening at 10,000 with the given (debit, credit, balance) rows."""
     return {
         "opening_balance": "10000.00", "closing_balance": closing, "ifsc": "HDFC0001234",
-        "transactions": [{"debit": d, "credit": c, "balance": b} for d, c, b in rows],
+        "transactions": [{"date": f"2026-09-{i:02d}", "debit": d, "credit": c, "balance": b}
+                         for i, (d, c, b) in enumerate(rows, start=1)],
     }
 
 
@@ -118,3 +119,27 @@ def test_expired_identity_document_is_a_document_only_warning():
 
 def test_kyc_required_fields():
     assert _codes("kyc_form", {"name": "Asha Verma"}) == ["required_fields_missing"]
+
+
+def test_bank_statement_row_without_date_or_balance_is_flagged():
+    st = _statement([("500.00", None, "9500.00"), (None, "2000.00", None)], "11500.00")
+    st["transactions"][0]["date"] = None
+    codes = _codes("bank_statement", st)
+    assert "transaction_missing_date" in codes and "transaction_missing_balance" in codes
+
+
+def test_bank_statement_without_any_balance_is_reported_not_climbed():
+    from app.modules.extraction.checks import DOCUMENT_ONLY
+    st = _statement([("500.00", None, None), (None, "2000.00", None)], "11500.00")
+    assert "running_balance_not_printed" in _codes("bank_statement", st)
+    assert "running_balance_not_printed" in DOCUMENT_ONLY
+
+
+def test_balance_lines_read_as_rows_are_removed():
+    from app.modules.extraction.schemas.bank_statement import BankStatement
+    st = BankStatement.model_validate({"transactions": [
+        {"date": "2025-04-01", "description": "Opening Balance", "balance": "250000.00"},
+        {"date": "2025-04-02", "description": "ATM", "debit": "100.00", "balance": "249900.00"},
+        {"date": "2025-04-30", "description": "Closing Balance", "balance": "249900.00"}]})
+    assert [t.description for t in st.transactions] == ["ATM"]
+    assert st.opening_balance == "250000.00" and st.closing_balance == "249900.00"

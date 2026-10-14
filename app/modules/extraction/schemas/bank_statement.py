@@ -13,7 +13,9 @@ by arithmetic; that is what the AI verifier checks for Rung 0 results.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+import re
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .base import DocBase, IsoDate, Money, Text
 
@@ -41,3 +43,29 @@ class BankStatement(DocBase):
     opening_balance: Money = None
     closing_balance: Money = None
     transactions: list[Transaction] = []
+
+    @model_validator(mode="after")
+    def _drop_balance_lines(self):
+        """"Opening Balance" / "B/F" / "Closing Balance" lines are not transactions, but models
+        often list them as rows anyway (seen with Claude Haiku on 2026-10-14, despite the prompt).
+        Such a row moves no money (no debit, no credit): it is removed, and its balance fills
+        the opening or closing balance if that is missing. Deterministic, so every reader
+        (parser or model) gives the same rows."""
+        kept = []
+        for t in self.transactions:
+            if t.debit is None and t.credit is None and _BALANCE_LINE.match((t.description or "").strip()):
+                if _OPENING.match(t.description.strip()) and self.opening_balance is None and not kept:
+                    self.opening_balance = t.balance
+                elif not _OPENING.match(t.description.strip()) and self.closing_balance is None:
+                    self.closing_balance = t.balance
+                continue
+            kept.append(t)
+        self.transactions = kept
+        return self
+
+
+# Balance lines (same words as parsers/lexicon.py OPENING_LINE / CLOSING_LINE; not imported from
+# there, because the parsers package itself imports this schema).
+_OPENING = re.compile(r"(?i)^(b\s*/\s*f\b|balance\s+b/?f|brought\s+forward|opening\s+balance|balance\s+forward)")
+_BALANCE_LINE = re.compile(r"(?i)^(b\s*/\s*f\b|balance\s+b/?f|brought\s+forward|opening\s+balance|balance\s+forward|"
+                           r"c\s*/\s*f\b|carried\s+forward|closing\s+balance)\b")

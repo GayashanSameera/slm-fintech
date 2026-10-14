@@ -359,6 +359,8 @@ How results are produced:
 | Code | Meaning | Recommended action |
 |---|---|---|
 | `running_balance_mismatch`, `closing_balance_mismatch` | Statement arithmetic doesn't hold | **Do not reconcile automatically**; route to manual review |
+| `transaction_missing_date`, `transaction_missing_balance` | Some rows could not be read completely | **Do not reconcile automatically**; route to manual review |
+| `running_balance_not_printed` | The statement prints no running balance, so its amounts could not be checked arithmetically | Treat amounts as unverified; review before reconciling |
 | `text_reconciliation_failed` | Extracted rows don't match the PDF's text exactly | **Do not reconcile automatically**; route to manual review |
 | `line_items_sum_mismatch`, `total_mismatch` | Invoice arithmetic doesn't hold | Manual review |
 | `earnings_sum_mismatch`, `net_pay_mismatch` | Payslip arithmetic doesn't hold | Manual review |
@@ -464,6 +466,7 @@ Messages are for humans and may change; **program against `code`**.
 | `unsupported_file_type`, `corrupt_file` | File unreadable or not a supported type |
 | `encrypted_document` | Password-protected PDF: send it without the password |
 | `too_many_pages` | More than 20 pages: split it |
+| `image_resolution_too_low` | Image under 1000 pixels on its long side: too small to read the print reliably. Send a larger scan or photo (or the PDF) |
 | `file_too_complex`, `macro_not_allowed` | Suspicious file structure, or a DOCX with macros |
 | `malware_detected`, `scan_failed`, `scan_timeout` | Malware scan result (the file is deleted) |
 | `unrecognised_document_type` | Couldn't tell the type: resend with `document_type` |

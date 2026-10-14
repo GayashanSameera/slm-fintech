@@ -39,7 +39,8 @@ GOOD_INVOICE = json.dumps({
 def _png() -> bytes:
     """A small synthetic PNG (a blank page) for the AI path."""
     buf = io.BytesIO()
-    Image.new("RGB", (200, 100), "white").save(buf, format="PNG")
+    # A4 proportions at a readable size (smaller images are refused: image_resolution_too_low).
+    Image.new("RGB", (1240, 1754), "white").save(buf, format="PNG")
     return buf.getvalue()
 
 

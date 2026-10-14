@@ -80,3 +80,19 @@ def test_worker_side_bad_file_becomes_job_error():
     with pytest.raises(JobError) as exc:
         preprocess(os.urandom(64))
     assert exc.value.code == "unsupported_file_type"
+
+
+def test_image_too_small_to_read_is_refused():
+    # A 262x300 thumbnail of a statement: models guess the values instead of reading them.
+    import io
+
+    import pytest
+    from PIL import Image
+
+    from app.core.errors import JobError
+    from app.modules.extraction.preprocess.image import prepare_image
+    buf = io.BytesIO()
+    Image.new("RGB", (262, 300), "white").save(buf, format="JPEG")
+    with pytest.raises(JobError) as e:
+        prepare_image(buf.getvalue())
+    assert e.value.code == "image_resolution_too_low"
