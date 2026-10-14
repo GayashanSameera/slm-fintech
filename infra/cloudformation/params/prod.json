@@ -1,5 +1,5 @@
 {
-  "_comment": "Parameter values for PROD, one block per stack. Read by scripts/deploy.py. Never put secrets here. After the API Gateway timeout quota increase is approved: ApiIntegrationTimeoutMs 45000, MaxWaitSeconds 40.",
+  "_comment": "Parameter values for PROD, one block per stack. Read by scripts/deploy.py. Never put secrets here. After the API Gateway timeout quota increase is approved: ApiIntegrationTimeoutMs 45000, MaxWaitSeconds 40. EnableWaf is false for now (2026-10-14, owner's decision, saves ~USD 8/month); set it back to \"true\" to restore the firewall.",
   "data": {
     "Env": "prod",
     "EnforceTenantEncryptionContext": "false",
@@ -18,7 +18,7 @@
     "BackgroundMaxConcurrency": "3",
     "ProcessingWindow": "always",
     "LogLevel": "INFO",
-    "EnableWaf": "true",
+    "EnableWaf": "false",
     "CorsAllowOrigin": "https://dcw2i73df06ry.cloudfront.net"
   },
   "observability": {
