@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # --- Browser access (CORS) ---------------------------------------------------
     # Comma-separated origins allowed to call the API from a web page, e.g.
     # "https://portal.example.com". Empty (default) = no browser access: tenants call
-    # the API from their servers. "*" is only for the proof-of-concept test page.
+    # the API from their servers. Never "*" in production.
     cors_origins: str = ""
 
     # --- Processing window (FR-5) ------------------------------------------------

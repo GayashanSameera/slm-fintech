@@ -22,7 +22,7 @@ from app.storage.tenants import TenantSettings
 from tests.helpers.simple_pdf import demo_reading, demo_statement, sample_transactions
 
 PROFILE = load_profile("default")
-NOVA, HAIKU, _ = (r.model for r in PROFILE.ladder)
+NOVA, HAIKU, SONNET = (r.model for r in PROFILE.ladder)
 
 
 def _run(pdf: bytes, gw: FakeGateway, *, requested_type: str | None = None, **tenant_settings):
@@ -90,10 +90,16 @@ def test_unreadable_verifier_answer_counts_as_disagree():
 def test_inconsistent_balances_reject_parser_without_verifying():
     rows = sample_transactions(5)
     rows[2]["balance"] = "99,999.00"                         # a printed balance that doesn't add up
-    gw = FakeGateway().queue(_ai_statement(sample_transactions(5)))
+    # The "AI" answers with tidy numbers that are NOT what the document prints.
+    tidy = _ai_statement(sample_transactions(5))
+    gw = FakeGateway().queue(tidy, tidy, tidy)
     out = _run(demo_statement(rows, closing="11,210.00"), gw)
     assert out.method == "ai"
-    assert [c["model_id"] for c in gw.calls] == [HAIKU]      # no verifier call was wasted
+    assert gw.calls[0]["model_id"] == HAIKU                  # no verifier call was wasted on the parser
+    # Text reconciliation notices the AI's rows differ from the printed document: it climbs the
+    # ladder and, still not matching, the result carries a warning instead of passing silently.
+    assert [c["model_id"] for c in gw.calls] == [HAIKU, HAIKU, SONNET]
+    assert out.warnings == ["text_reconciliation_failed"]
 
 
 def test_requested_other_type_skips_rung0():
@@ -169,3 +175,4 @@ def test_parser_that_missed_the_last_row_is_rejected():
 def test_answer_that_is_not_an_object_counts_as_unreadable():
     v, *_ = _verify('["agree"]')
     assert v.agree is False and v.issue_paths == ["_verifier_unreadable"]
+

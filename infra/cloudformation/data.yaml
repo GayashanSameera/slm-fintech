@@ -20,7 +20,7 @@ Description: SLM Fintech - data stack (KMS, DynamoDB, S3 documents + code bucket
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod, poc]
+    AllowedValues: [dev, prod]
     Description: Environment name. Used in every resource name and export.
 
   EnforceTenantEncryptionContext:
@@ -39,8 +39,8 @@ Parameters:
     Default: ""
     Description: >
       Web origin allowed to call the API (and upload to S3) from a BROWSER, e.g. https://portal.example.com.
-      Empty (default) = no browser access; tenants call the API from their servers. "*" only for the
-      proof-of-concept test page. CORS grants no access by itself: every call still needs an API key.
+      Empty (default) = no browser access; tenants call the API from their servers. Set it only for a
+      web front end of your own. CORS grants no access by itself: every call still needs an API key.
 
 Conditions:
   CorsOn: !Not [!Equals [!Ref CorsAllowOrigin, ""]]
@@ -263,7 +263,7 @@ Resources:
       NotificationConfiguration:
         EventBridgeConfiguration:
           EventBridgeEnabled: true
-      # Browser uploads (presigned POST) from the POC test page only. The signed upload
+      # Browser uploads (presigned POST), only when CorsAllowOrigin is set. The signed upload
       # policy still decides WHAT may be uploaded; CORS only lets the browser send it.
       CorsConfiguration: !If
         - CorsOn
@@ -316,7 +316,7 @@ Resources:
 
   # ----------------------------------------------------------------------------
   # Code bucket: holds the Lambda zip packages (scripts/build_lambda.py makes them,
-  # scripts/deploy.sh uploads them). It lives in this stack because the zip must
+  # scripts/deploy.py uploads them). It lives in this stack because the zip must
   # exist BEFORE the app stack can create the functions.
   # Packages are named by content hash (lambda-<hash>.zip), so a key always means
   # the same code; old packages expire after 90 days (keep a few for rollbacks).

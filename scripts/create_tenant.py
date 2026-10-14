@@ -3,8 +3,11 @@
 This is an OPERATOR script, run by a person with admin AWS credentials. It is
 never part of the public API: tenants cannot create tenants.
 
-    # first tenant in dev, read+write key, no webhook
-    uv run python scripts/create_tenant.py --env dev --name LYNEAR
+    # first tenant in prod, read+write key, no webhook
+    uv run python scripts/create_tenant.py --env prod --name LYNEAR --profile lyndev
+
+    # write the key to a private file instead of printing it (automation, smoke tests)
+    uv run python scripts/create_tenant.py --env prod --name SMOKE-TEST --profile lyndev --key-file ~/.slm/smoke.key
 
     # with a webhook and a longer retention
     uv run python scripts/create_tenant.py --env prod --name LYNEAR \
@@ -55,6 +58,10 @@ def configure_environment(env: str) -> None:
     """
     if env == "local":
         return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _aws import prefer_ipv4
+
+    prefer_ipv4()                    # broken IPv6 on some networks makes AWS calls hang
     os.environ.update({
         "SLM_ENV": env,
         "SLM_REGION": AWS_REGION,
@@ -67,8 +74,10 @@ def configure_environment(env: str) -> None:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Create a tenant and its first API key.")
-    p.add_argument("--env", required=True, choices=["local", "dev", "prod", "poc"])
+    p.add_argument("--env", required=True, choices=["local", "dev", "prod"])
     p.add_argument("--name", required=True, help="Tenant display name, e.g. LYNEAR. Must be unique.")
+    p.add_argument("--profile", help="AWS CLI profile of the target account, e.g. lyndev")
+    p.add_argument("--key-file", help="Write the API key to this file (mode 600) instead of printing it.")
     p.add_argument("--read-only", action="store_true", help="Key may only read results (no uploads).")
     p.add_argument("--retention-days", type=int, default=30, choices=[7, 30, 90, 365])
     p.add_argument("--verification-mode", default="ai", choices=["ai", "checks_only"],
@@ -124,6 +133,8 @@ def create_webhook_secret(env: str, tenant_id: str) -> tuple[str, str]:
 
 def main(argv: list[str] | None = None) -> dict:
     args = parse_args(argv)
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
     configure_environment(args.env)
 
     # Imported only now, so the settings above are in effect.
@@ -161,8 +172,15 @@ def main(argv: list[str] | None = None) -> dict:
     print(f"  unmasked kinds    {', '.join(overrides['unmasked_kinds']) or '(none: everything masked)'}")
     print(f"  training consent  {'yes, by ' + args.consent_by if args.training_consent else 'no'}")
     print()
-    print("API key (shown ONCE, store it in the tenant's secret manager now):")
-    print(f"  {api_key}")
+    if args.key_file:
+        key_path = Path(args.key_file).expanduser()
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_text(api_key + "\n")
+        key_path.chmod(0o600)                       # readable by you only
+        print(f"API key written to {key_path} (not printed).")
+    else:
+        print("API key (shown ONCE, store it in the tenant's secret manager now):")
+        print(f"  {api_key}")
     if webhook_secret_value:
         print()
         print("Webhook signing secret (shown ONCE, the tenant uses it to verify X-Signature):")

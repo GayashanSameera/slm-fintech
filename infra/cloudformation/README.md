@@ -8,7 +8,7 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 |---|---|
 | Tool | **AWS CloudFormation**, plain YAML templates, deployed with the AWS CLI |
 | Region | `us-east-1` (N. Virginia). Bedrock inference may also run in `us-east-2` and `us-west-2` |
-| Environments | `dev` and `prod` (four stacks each), ideally in **separate AWS accounts**; plus the one-stack **POC** (next section) |
+| Environments | `dev` and `prod` (four stacks each), ideally in **separate AWS accounts** |
 | Cost | ~USD 20/month infrastructure in prod at 1,000 pages per business day; ~USD 5 for dev (section 6) |
 | First tenant | **LYNEAR** (section 8.3) |
 | How the code uses these resources | [docs/implementation-flow.md](../../docs/implementation-flow.md), stage by stage |
@@ -34,37 +34,13 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 
 ---
 
-## Proof of concept: everything in ONE stack (current)
+## Enable the Claude models once per account
 
-For the proof of concept the whole platform runs as **one stack, `slm-poc`**, so that one command removes everything afterwards. It is **generated** from the four templates below by `scripts/build_single_stack.py`, so the two can never drift apart. In it, **everything is deleted with the stack**: no retained tables, keys, buckets or secrets.
+Someone with admin rights must do this once in each AWS account, in us-east-1, or every AI call fails with `AccessDeniedException`:
+1. Bedrock console → **Model catalog** → the yellow banner → **Submit use case details** (Anthropic's one-time form).
+2. Open **Claude Haiku 5.5** and **Claude Sonnet 5.5** in **Playground → Chat** and send one message to each. That creates the Marketplace subscription.
 
-| | |
-|---|---|
-| Account / region | `lyndev` (866726123372) / **us-east-1**: switch the console's region selector to N. Virginia |
-| Stack | `slm-poc` (CloudFormation → Stacks) |
-| Outside the stack | one bucket, `slm-poc-code-<account>-us-east-1`, for the Lambda zip and the template (`down` deletes it) |
-| API | the `ApiUrl` output of `slm-poc` |
-| Tenant | LYNEAR |
-
-```bash
-uv run python scripts/poc.py up     --profile lyndev   # build zip, generate template, deploy, onboard LYNEAR
-uv run python scripts/poc.py smoke  --profile lyndev   # real documents through the real API
-uv run python scripts/poc.py status --profile lyndev
-uv run python scripts/poc.py down   --profile lyndev   # delete EVERYTHING (asks you to type the stack name)
-```
-
-**Test page.** Open `tools/poc_ui/index.html` in a browser, straight from disk; no server to run. `up` writes `tools/poc_ui/config.local.js` (API URL and LYNEAR's test key) and `samples.js` (synthetic sample documents). Both are gitignored. The page calls API Gateway and S3 directly, which the POC allows with CORS (`CorsAllowOrigin=*`). The key sits in your browser: fine for a POC test key, never do it with a production key.
-
-What `down` does beyond deleting the stack:
-- empties the buckets;
-- deletes the secrets immediately;
-- removes stray log groups;
-- resets the API Gateway logging-role setting;
-- deletes the test page's settings.
-
-AWS deletes the three KMS keys itself after 7 days (about USD 0.25).
-
-**Before Claude models work in an account**, someone with AWS Marketplace permissions must enable them once: Bedrock console → *Model catalog* → open **Claude Haiku 5.5**, then **Claude Sonnet 5.5** → request access / subscribe. Until then the AI ladder fails with `AccessDeniedException` ("not authorized to perform the required AWS Marketplace actions"). Amazon Nova Lite needs no subscription.
+Amazon Nova Lite needs neither step.
 
 ---
 
@@ -76,7 +52,7 @@ AWS deletes the three KMS keys itself after 7 days (about USD 0.25).
 | **Stack** | One deployed copy of a template, e.g. `slm-dev-data`. CloudFormation remembers what it created and updates or deletes exactly those resources. |
 | **Parameter** | A value passed in at deploy time (e.g. `Env=dev`). Our values live in `params/dev.json` and `params/prod.json`. |
 | **Output / Export** | A value a stack publishes, e.g. the table name. Another stack reads it with `Fn::ImportValue`. This is how our four stacks connect. |
-| **Change set** | A preview: "these resources will be added, changed, or replaced". `scripts/deploy.sh` always shows one and asks before applying it. |
+| **Change set** | A preview: "these resources will be added, changed, or replaced". `scripts/deploy.py` always shows one and asks before applying it. |
 | **Lambda function** | Our code, run by AWS only when something triggers it. No servers; billed per millisecond. |
 | **Code package** | One zip file with our code plus its libraries, built by `scripts/build_lambda.py` (no Docker needed). All 7 functions run the **same** zip, each with a different `Handler`. |
 | **IAM role** | An identity with a list of permissions. Each function has its own role and can do only what is listed. |
@@ -140,7 +116,7 @@ The serverless resources are in **`app.yaml`**: the 7 Lambda functions, their tr
 
 ## 4. The four stacks, resource by resource
 
-Deploy order is **data → security → app → observability** (`deploy.sh` builds and uploads the code zip for `app`). Each stack imports values exported by the ones before it.
+Deploy order is **data → security → app → observability** (`deploy.py` builds and uploads the code zip for `app`). Each stack imports values exported by the ones before it.
 
 ### 4.1 `data.yaml`: everything that stores something (stack `slm-<env>-data`)
 
@@ -318,7 +294,7 @@ Do these in order; most take minutes, the quota requests can take days.
 | 6 | Make sure Bedrock **model invocation logging is OFF** (Bedrock console → Settings). | It would copy documents into logs. The `SecurityChangeRule` alerts if anyone turns it on later. |
 | 7 | Decide **CloudTrail**: if your organisation already has an organisation trail, set `"CreateTrail": "false"` in `params/<env>.json`. | Avoids a duplicate trail. |
 | 8 | Put a real address in `"AlertEmail"` in `params/<env>.json`. | Alarms and budget alerts go there. |
-| 9 | Install tools: AWS CLI v2, Python 3, `uv` (no Docker needed). Then `uvx cfn-lint --version`. | `scripts/deploy.sh` needs bash 4+ (Linux, or Homebrew bash on macOS). |
+| 9 | Install tools: AWS CLI v2, Python 3, `uv` (no Docker needed). Then `uvx cfn-lint --version`. |  |
 | 10 | Sign in with admin credentials for the target account: `aws sts get-caller-identity`. | Creating IAM roles needs admin rights. |
 
 ---
@@ -329,22 +305,30 @@ All commands run from the repository root.
 
 ### 8.1 First deployment of an environment
 
+All four stacks in order, with one command (each change set is shown and confirmed):
+
 ```bash
-# 1. Storage, keys, image repository (~3 min)
-scripts/deploy.sh dev data
-
-# 2. Tenant-data role, pepper secret, GuardDuty role, CloudTrail (~2 min)
-scripts/deploy.sh dev security
-
-# 3. Functions, queues, API, WAF, GuardDuty plan (~5 min). deploy.sh builds the code zip
-#    (scripts/build_lambda.py, no Docker) and uploads it to the code bucket first.
-scripts/deploy.sh dev app
-
-# 5. Alarms, budget, dashboard, security alerts (~1 min). Then CONFIRM the SNS email.
-scripts/deploy.sh dev observability
+uv run python scripts/deploy.py prod all --profile lyndev
 ```
 
-What `scripts/deploy.sh <env> <stack> [tag]` does each time:
+Or one stack at a time:
+
+```bash
+# 1. Storage, keys, image repository (~3 min)
+uv run python scripts/deploy.py dev data --profile <profile>
+
+# 2. Tenant-data role, pepper secret, GuardDuty role, CloudTrail (~2 min)
+uv run python scripts/deploy.py dev security --profile <profile>
+
+# 3. Functions, queues, API, WAF, GuardDuty plan (~5 min). deploy.py builds the code zip
+#    (scripts/build_lambda.py, no Docker) and uploads it to the code bucket first.
+uv run python scripts/deploy.py dev app --profile <profile>
+
+# 5. Alarms, budget, dashboard, security alerts (~1 min). Then CONFIRM the SNS email.
+uv run python scripts/deploy.py dev observability --profile <profile>
+```
+
+What `scripts/deploy.py` does for each stack:
 1. runs `cfn-lint` on the template;
 2. reads that stack's block from `params/<env>.json`;
 3. creates a **change set** and prints a table of planned changes;
@@ -379,15 +363,15 @@ uv run python scripts/create_tenant.py --env dev --name LYNEAR
 
 ## 9. Releasing a new version, and rolling back
 
-**Release** = step 3 of section 8.1 again: `scripts/deploy.sh prod app`. It rebuilds the zip; its name is a hash of its contents, so unchanged code is not uploaded again.
+**Release** = step 3 of section 8.1 again: `uv run python scripts/deploy.py prod app --profile <profile>`. It rebuilds the zip; its name is a hash of its contents, so unchanged code is not uploaded again.
 
 The change set should show only the 7 `AWS::Lambda::Function` resources as `Modify` with `Replacement = False`.
 
-**Rollback** = check out the previous release's commit and run `scripts/deploy.sh prod app` again (old packages stay in the code bucket for 90 days).
+**Rollback** = check out the previous release's commit and run `uv run python scripts/deploy.py prod app --profile <profile>` again (old packages stay in the code bucket for 90 days).
 
 If a stack update **fails**, CloudFormation rolls back to the previous working state by itself. Check the stack's **Events** tab for the first `FAILED` line.
 
-**Changing a setting** (for example the wait time after the quota increase): edit `params/<env>.json`, then run `scripts/deploy.sh <env> app <current-tag>`.
+**Changing a setting** (for example the wait time after the quota increase): edit `params/<env>.json`, then run `uv run python scripts/deploy.py <env> app --profile <profile>`.
 
 ---
 
@@ -398,8 +382,8 @@ If a stack update **fails**, CloudFormation rolls back to the previous working s
 | all | `Env` | (none) | `dev` or `prod`; part of every resource name and export |
 | data, security | `EnforceTenantEncryptionContext` | `false` | KMS decrypts only for the matching tenant session; turns S3 Bucket Key off. **Must be equal in both stacks.** |
 | security | `CreateTrail` | `true` | Create this account's CloudTrail trail |
-| app | `CodeKey` | (none) | S3 key of the Lambda zip (set by `deploy.sh`) |
-| data, app | `CorsAllowOrigin` | `""` | Web origin allowed to call the API from a browser. Empty = none. `*` only for the POC test page |
+| app | `CodeKey` | (none) | S3 key of the Lambda zip (set by `deploy.py`) |
+| data, app | `CorsAllowOrigin` | `""` | Web origin allowed to call the API from a browser. Empty = none. Never `*` in production |
 | app | `ApiIntegrationTimeoutMs` | `29000` | API Gateway wait for the api function. 45000 after the quota increase |
 | app | `MaxWaitSeconds` | `25` | Longest `?wait=`; keep a few seconds below the timeout. 40 after the quota increase |
 | app | `ApiThrottleRate` / `ApiThrottleBurst` | `50` / `100` | Requests per second for the whole API |
@@ -458,8 +442,8 @@ The code bucket must be emptied before the data stack can delete it.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `deploy.sh`: "Export slm-dev-X cannot be updated/deleted as it is in use" | A later stack imports that value | Change or delete the importing stack first (section 12 order) |
-| `app` stack fails creating a function: code not found | Zip not uploaded, or wrong `CodeKey` | Run `scripts/deploy.sh <env> app` (it builds and uploads); don't pass `CodeKey` by hand |
+| `deploy.py`: "Export slm-dev-X cannot be updated/deleted as it is in use" | A later stack imports that value | Change or delete the importing stack first (section 12 order) |
+| `app` stack fails creating a function: code not found | Zip not uploaded, or wrong `CodeKey` | Run `uv run python scripts/deploy.py <env> app` (it builds and uploads); don't pass `CodeKey` by hand |
 | `app` stack: "CloudWatch Logs role ARN must be set in account settings" | `ApiGatewayAccount` not yet applied | Re-run; the stage already depends on it. If another stack owns this setting, remove `ApiGatewayAccount` and `ApiGatewayCloudWatchRole` from `app.yaml` |
 | `security` stack: trail creation fails | An organisation trail exists, or the bucket policy is not ready | Set `CreateTrail=false`, or re-run once |
 | Every API call returns **401** | Missing header, or not `Authorization: Bearer slm_...` | Check the header; the key must be from the same environment |
@@ -481,7 +465,7 @@ The code bucket must be emptied before the data stack can delete it.
   - the GuardDuty scan-result event field names (`app/intake.py`);
   - the Scheduler payload that switches the worker triggers (`{"UUID": ..., "Enabled": ...}`, only used with a processing window).
 - **Per-tenant throttling:** today the stage throttles the whole API and WAF limits each IP. Per-tenant usage plans (FR-1.8) need the authorizer to return a `usageIdentifierKey`.
-- **CI/CD:** a GitHub Actions workflow (OIDC to AWS, build, push, `AUTO_APPROVE=1 scripts/deploy.sh dev app $TAG`) is still to be written (implementation guide §7.4).
+- **CI/CD:** a GitHub Actions workflow (OIDC to AWS, build, push, `AUTO_APPROVE=1 uv run python scripts/deploy.py dev app --profile <profile> $TAG`) is still to be written (implementation guide §7.4).
 - **Organisation controls:** SCPs for the region lock, the Bedrock retention lock and the ban on Bedrock API keys belong to an organisation-level stack, not written yet.
 - **Cost alarms from the app's numbers** (Sonnet escalation rate, verifier disagreement, cost per day, cost.md §9) need CloudWatch metric filters on the usage logs, about USD 0.30 per metric.
 - **Audit log group:** audit records go to the `api` log group (kept 180 days) rather than a separate `audit` group.

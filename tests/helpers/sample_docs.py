@@ -1,4 +1,4 @@
-"""SYNTHETIC sample documents for smoke tests and the POC test app (never real data).
+"""SYNTHETIC sample documents for tests and the smoke test (never real data).
 
     make_invoice_png()      a scanned-looking GST invoice image (goes through the AI ladder)
     make_statement_pdf()    a digital DEMO BANK statement (goes through Rung 0)

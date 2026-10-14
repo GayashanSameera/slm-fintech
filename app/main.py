@@ -96,7 +96,7 @@ def healthz():
     return {"ok": True}
 
 
-# Browser access (CORS), only when SLM_CORS_ORIGINS is set (the POC test page).
+# Browser access (CORS), only when SLM_CORS_ORIGINS is set (a web front end of the operator's own).
 # Pre-flight OPTIONS requests are answered by API Gateway itself (app.yaml), because
 # they carry no API key and would otherwise be refused by the authorizer; this
 # middleware adds the CORS headers to the REAL responses. CORS gives no access by

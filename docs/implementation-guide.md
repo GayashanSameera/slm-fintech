@@ -1346,7 +1346,7 @@ infra/cloudformation/
     └── prod.json
 ```
 
-Deploy one stack at a time with `scripts/deploy.sh <env> <stack> [image-tag]`. It lints the template, creates a change set, shows it, and executes it only after you confirm.
+Deploy with `uv run python scripts/deploy.py <env> <stack|all> --profile <profile>`. It lints the template, creates a change set, shows it, and executes it only after you confirm.
 
 Stacks pass values to each other with `Outputs` + `Export` and `Fn::ImportValue` (for example `data` exports the table name and bucket ARN, and `app` imports them). An export can't change while another stack imports it, so export only stable names and ARNs.
 

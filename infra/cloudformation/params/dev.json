@@ -1,5 +1,5 @@
 {
-  "_comment": "Parameter values for the DEV environment, one block per stack. Read by scripts/deploy.sh. Never put secrets here.",
+  "_comment": "Parameter values for the DEV environment, one block per stack. Read by scripts/deploy.py. Never put secrets here.",
   "data": {
     "Env": "dev",
     "EnforceTenantEncryptionContext": "false"

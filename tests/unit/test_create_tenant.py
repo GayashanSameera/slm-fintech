@@ -73,3 +73,23 @@ def test_settings_and_webhook(aws):
 def test_invalid_arguments_rejected(aws, bad_args):
     with pytest.raises(SystemExit):
         _load_script().main(["--env", "local", "--name", "LYNEAR", *bad_args])
+
+
+def test_key_rotation_create_list_revoke(aws):
+    from app.auth.principal import resolve_api_key
+    from app.core.errors import ApiError
+    from app.storage.tenants import create_api_key, list_api_keys, revoke_api_key
+
+    out = _load_script().main(["--env", "local", "--name", "LYNEAR"])
+    old_key, tenant_id = out["api_key"], out["tenant_id"]
+    new_key = create_api_key(tenant_id, ["extractions:read"], live=False)
+    keys = list_api_keys(tenant_id)
+    assert len(keys) == 2 and all("key_hash" not in k for k in keys)      # hashes never listed
+
+    old_id = resolve_api_key(old_key).key_id
+    assert revoke_api_key(tenant_id, old_id) is True
+    with pytest.raises(ApiError) as exc:
+        resolve_api_key(old_key)                                           # the authorizer now refuses it
+    assert exc.value.status == 401
+    assert resolve_api_key(new_key).tenant_id == tenant_id                # the new key keeps working
+    assert {k["key_id"]: k["status"] for k in list_api_keys(tenant_id)}[old_id] == "revoked"

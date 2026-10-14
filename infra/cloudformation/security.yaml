@@ -19,7 +19,7 @@ Description: SLM Fintech - security stack (tenant-data role, secrets, GuardDuty 
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod, poc]
+    AllowedValues: [dev, prod]
   EnforceTenantEncryptionContext:
     Type: String
     AllowedValues: ["false", "true"]

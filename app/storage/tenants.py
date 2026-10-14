@@ -98,7 +98,35 @@ def create_api_key(tenant_id: str, scopes: list[str], live: bool = True) -> str:
     })
     table.put_item(Item={
         "PK": keys.tenant_pk(tenant_id), "SK": keys.key_sk(key_id),
-        "key_id": key_id, "scopes": scopes, "created_at": now_iso(),
+        "key_id": key_id, "scopes": scopes, "created_at": now_iso(), "status": "active",
         "hint": api_key[-4:],                    # last 4 chars, to recognise the key in a list
+        # The lookup item's hash, so the key can be REVOKED by its id later. It is not the
+        # key: the hash can't be turned back into a key (and is already the lookup item's PK).
+        "key_hash": hash_api_key(api_key),
     })
     return api_key
+
+
+def list_api_keys(tenant_id: str) -> list[dict]:
+    """The tenant's keys (metadata only: id, scopes, status, created/revoked, last 4 chars)."""
+    from boto3.dynamodb.conditions import Key
+
+    items = dynamodb_table().query(
+        KeyConditionExpression=Key("PK").eq(keys.tenant_pk(tenant_id)) & Key("SK").begins_with("KEY#"))["Items"]
+    return [{k: v for k, v in from_ddb(i).items() if k != "key_hash" and k not in ("PK", "SK")} for i in items]
+
+
+def revoke_api_key(tenant_id: str, key_id: str) -> bool:
+    """Revoke one key. The authorizer refuses it from then on; API Gateway's 60-second
+    authorizer cache means it stops working within a minute (security.md §6.1)."""
+    table = dynamodb_table()
+    meta = table.get_item(Key={"PK": keys.tenant_pk(tenant_id), "SK": keys.key_sk(key_id)}).get("Item")
+    if not meta or not meta.get("key_hash"):
+        return False
+    table.update_item(Key={"PK": keys.api_key_pk(meta["key_hash"]), "SK": "APIKEY"},
+                      UpdateExpression="SET #s = :r", ConditionExpression="attribute_exists(PK)",
+                      ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":r": "revoked"})
+    table.update_item(Key={"PK": keys.tenant_pk(tenant_id), "SK": keys.key_sk(key_id)},
+                      UpdateExpression="SET #s = :r, revoked_at = :t",
+                      ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":r": "revoked", ":t": now_iso()})
+    return True

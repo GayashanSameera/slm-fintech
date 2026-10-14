@@ -37,6 +37,7 @@ from .classify import classify
 from .masking import has_aadhaar_markers, mask
 from .normalise import to_result
 from .parsers import try_rung0
+from .parsers.reconcile import reconcile
 from .profiles import Profile
 from .prompts import instruction, strip_code_fences, system_prompt
 from .schemas import REGISTRY
@@ -108,6 +109,23 @@ def parse_and_validate(res: GatewayResult, model: type[BaseModel]) -> tuple[Base
         return None, [f"Field '{'.'.join(map(str, err['loc']))}': {err['type']}" for err in e.errors()[:10]]
 
 
+def text_reconciliation_failures(doc_type: str, parsed, pages: list[dict]) -> list[CheckFailure]:
+    """Digital bank statements read by AI must ALSO match the PDF text, row by row (reconcile.py).
+
+    Treated like a failed consistency check: the ladder climbs, and if it still fails at
+    the top, the codes are returned as warnings. Messages name rows and fields only.
+    Scanned pages have no text layer, so nothing can be reconciled for them.
+    """
+    if doc_type != "bank_statement" or not pages or any(p.get("scanned") or not p.get("text") for p in pages):
+        return []
+    issues = reconcile(parsed, [p["text"] for p in pages])
+    if not issues:
+        return []
+    return [CheckFailure("text_reconciliation_failed",
+                         "These fields do not match the document text exactly: " + ", ".join(issues[:15])
+                         + ". Copy every row exactly as printed, in order.")]
+
+
 def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: ModelGateway,
                start_rung: int | None = None) -> tuple[BaseModel, list[CheckFailure], str, list[GatewayResult]]:
     """Gate 3 and climbing. Returns (best parsed result, its failures, model id, calls)."""
@@ -127,7 +145,7 @@ def run_ladder(doc_type: str, pages: list[dict], profile: Profile, gateway: Mode
         if parsed is None:
             log.info("ladder_attempt", rung=rung, attempt=attempt, model_id=model_id, status="invalid")
             continue
-        failures = run_checks(doc_type, parsed)
+        failures = run_checks(doc_type, parsed) + text_reconciliation_failures(doc_type, parsed, pages)
         blocking = [f for f in failures if f.code not in DOCUMENT_ONLY]
         if best is None or len(failures) < len(best[1]):
             best = (parsed, failures, model_id)

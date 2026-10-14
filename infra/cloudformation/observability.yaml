@@ -15,7 +15,7 @@ Description: SLM Fintech - observability stack (alarms, budget, dashboard)
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod, poc]
+    AllowedValues: [dev, prod]
   AlertEmail:
     Type: String
     Default: ""

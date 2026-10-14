@@ -7,8 +7,6 @@
 .env
 .env.*
 !.env.example
-# written by scripts/poc.py up: holds LYNEAR's API key
-tools/poc_ui/config.local.js
 *.pem
 *.key
 
@@ -30,10 +28,6 @@ htmlcov/
 # --- Build output ----------------------------------------------------------------
 # Lambda zip packages (scripts/build_lambda.py)
 dist/
-# generated single-stack template (scripts/build_single_stack.py)
-infra/cloudformation/build/
-# generated sample documents for the test page
-tools/poc_ui/samples.js
 node_modules/
 
 # --- Real documents and test data: never commit (tests use SYNTHETIC files only) --

@@ -462,12 +462,12 @@ Every arrow is a **conditional** DynamoDB update ([JobRepo.transition](../app/st
 3. **Retention wasn't exact (NFR-C5).** DynamoDB TTL deletes expired items only "usually within a few days", and no read checked `expires_at`, so an expired job and its result could still be fetched for days. `JobRepo` now treats expired items as deleted in `get`, `list` and `find_dedup`, and the worker skips a job that expired while queued.
 4. **Earlier today** (infrastructure review): tenant sessions now outlive the presigned URLs they sign.
 
-**Verified on real AWS** (stack `slm-poc` in lyndev, 2026-10-14, `scripts/poc.py smoke`):
+**Verified on real AWS** (lyndev account, us-east-1, 2026-10-14, end-to-end smoke test):
 - the whole presigned flow: S3 upload → GuardDuty scan → EventBridge → intake → worker → result in ~9 s;
 - Rung 0 on digital statements (1 and 2 pages) with Nova Lite verification, in ~5–8 s;
 - the AI ladder on Claude Haiku 5.5, plus Sonnet 5.5 and thinking retries;
 - the Converse request format per model (`bedrock.py` "CONFIRMED"): Claude 5.5 rejects `temperature`; thinking off is `disabled` on Haiku but `between_tools` on Sonnet;
-- CORS for the browser test page, and token usage in responses.
+- token usage in responses.
 
 **Not verified yet:**
 - the field names of GuardDuty's scan-result event (noted in `intake.py`);

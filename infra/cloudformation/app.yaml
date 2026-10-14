@@ -25,10 +25,10 @@ Description: SLM Fintech - app stack (API Gateway, WAF, Lambdas, SQS, EventBridg
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod, poc]
+    AllowedValues: [dev, prod]
   CodeKey:
     Type: String
-    Description: S3 key of the Lambda zip in the code bucket, e.g. lambda-983e9cc7b411093f.zip (set by scripts/deploy.sh).
+    Description: S3 key of the Lambda zip in the code bucket, e.g. lambda-983e9cc7b411093f.zip (set by scripts/deploy.py).
 
   # --- API timing ------------------------------------------------------------------
   # API Gateway REST APIs stop waiting for the backend after 29 s by DEFAULT. The
@@ -49,8 +49,8 @@ Parameters:
     Default: ""
     Description: >
       Web origin allowed to call the API (and upload to S3) from a BROWSER, e.g. https://portal.example.com.
-      Empty (default) = no browser access; tenants call the API from their servers. "*" only for the
-      proof-of-concept test page. CORS grants no access by itself: every call still needs an API key.
+      Empty (default) = no browser access; tenants call the API from their servers. Set it only for a
+      web front end of your own. CORS grants no access by itself: every call still needs an API key.
 
   # --- Throughput and protection ---------------------------------------------------
   ApiThrottleRate:     { Type: Number, Default: 50,   Description: Steady requests per second for the whole API }

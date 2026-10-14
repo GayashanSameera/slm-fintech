@@ -1,5 +1,5 @@
 {
-  "_comment": "Parameter values for PROD, one block per stack. Read by scripts/deploy.sh. Never put secrets here. After the API Gateway timeout quota increase is approved: ApiIntegrationTimeoutMs 45000, MaxWaitSeconds 40.",
+  "_comment": "Parameter values for PROD, one block per stack. Read by scripts/deploy.py. Never put secrets here. After the API Gateway timeout quota increase is approved: ApiIntegrationTimeoutMs 45000, MaxWaitSeconds 40.",
   "data": {
     "Env": "prod",
     "EnforceTenantEncryptionContext": "false"
@@ -7,7 +7,7 @@
   "security": {
     "Env": "prod",
     "EnforceTenantEncryptionContext": "false",
-    "CreateTrail": "true"
+    "CreateTrail": "false"
   },
   "app": {
     "Env": "prod",
@@ -21,7 +21,7 @@
   },
   "observability": {
     "Env": "prod",
-    "AlertEmail": "CHANGE-ME@example.com",
+    "AlertEmail": "",
     "MonthlyBudgetUsd": "150"
   }
 }

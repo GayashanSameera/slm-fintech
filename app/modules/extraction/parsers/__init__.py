@@ -8,8 +8,9 @@ It NEVER raises for parser problems: a broken or confused parser must not fail
 the job (requirement FR-9.5). It just steps aside.
 
 Flow (architecture §3.3):
-    fingerprint -> parse -> schema validation -> consistency checks
-    -> coverage checks -> AI verification (unless tenant chose checks_only)
+    fingerprint -> parse -> schema validation -> consistency checks -> coverage checks
+    -> text reconciliation (every row, every field, against the PDF text; reconcile.py)
+    -> AI verification (unless tenant chose checks_only)
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from ..checks import run_checks
 from ..schemas.bank_statement import BankStatement
 from .coverage import coverage_problems
 from .fingerprint import pick_parser
+from .reconcile import reconcile
 from .verify import verify
 
 log = get_logger(__name__)
@@ -63,7 +65,11 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
         return None, calls, True
 
     failed = [f.code for f in run_checks("bank_statement", statement)]
-    failed += coverage_problems(statement, [p["text"] for p in prepared.pages])
+    page_texts = [p["text"] for p in prepared.pages]
+    failed += coverage_problems(statement, page_texts)
+    # Statement rows are reconciled with real transactions downstream: EVERY row must
+    # match the document's own text, field by field, before anything else is trusted.
+    failed += reconcile(statement, page_texts)
     if failed:
         log.info("rung0_rejected", job_id=job_id, parser_id=parser.parser_id,
                  error_code="checks_failed", checks_failed=failed)

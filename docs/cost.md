@@ -18,7 +18,7 @@ At **1,000 pages per business day** (22,000 pages a month), the platform costs a
 | 1,000 pages every calendar day | 30,000 | 47 | 22 | **USD 69** |
 | Pessimistic (§5.1) | 22,000 | 101 | 20 | **USD 121** |
 | Growth: 5,000 pages per business day (NFR-P1) | 110,000 | 160 | 47 | **USD 207** |
-| Dev environment (WAF off, ~500 test pages) | 500 | ~1 | 5 | **~USD 6** |
+| Dev environment (WAF off, ~500 test documents' pages) | 500 | ~1 | 5 | **~USD 6** |
 
 All figures are in USD, exclude taxes and are rounded. Infrastructure is shown **before** free tiers. Prices are us-east-1 list prices as of 2026-10-13; Bedrock prices must be confirmed (§2.1).
 
