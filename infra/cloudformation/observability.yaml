@@ -15,13 +15,17 @@ Description: SLM Fintech - observability stack (alarms, budget, dashboard)
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod]
+    AllowedValues: [dev, prod, poc]
   AlertEmail:
     Type: String
-    Description: Address that receives alarms and budget alerts (must confirm the SNS subscription email).
+    Default: ""
+    Description: Address that receives alarms and budget alerts (must confirm the SNS subscription email). Empty = no email; alarms still show in the console.
   MonthlyBudgetUsd:
     Type: Number
     Default: 150                              # NFR-K1 target; the estimate is ~USD 80 (docs/cost.md)
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, ""]]
 
 Resources:
   # Not KMS-encrypted on purpose: CloudWatch alarms and AWS Budgets can NOT publish
@@ -36,8 +40,10 @@ Resources:
             comment: "Alerts carry no data; aws/sns encryption would stop CloudWatch alarms and Budgets from publishing."
     Properties:
       TopicName: !Sub slm-${Env}-alerts
-      Subscription:
-        - { Protocol: email, Endpoint: !Ref AlertEmail }
+      Subscription: !If
+        - HasEmail
+        - [{ Protocol: email, Endpoint: !Ref AlertEmail }]
+        - !Ref AWS::NoValue
 
   # Who may publish. A topic policy REPLACES the default one, so it must list every
   # publisher: CloudWatch alarms and AWS Budgets, both only from this account.

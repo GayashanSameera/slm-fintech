@@ -109,7 +109,22 @@ def sample_transactions(n: int = 5, start: float = 10000.0) -> list[dict]:
             amount = 1000.0 + i * 5
             balance += amount
             debit, credit = "", f"{amount:,.2f}"
-        rows.append({"date": f"{i + 1:02d}/09/2026", "description": f"UPI/Shop{i}",
+        # Spread the rows over September (1st to 30th) so any number of rows gives real dates.
+        day = 1 + (i * 30) // max(n, 1)
+        rows.append({"date": f"{day:02d}/09/2026", "description": f"UPI/Shop{i}",
                      "reference": f"REF{i:04d}", "debit": debit, "credit": credit,
                      "balance": f"{balance:,.2f}"})
     return rows
+
+
+def demo_reading(transactions: list[dict], account: str = "001234567890", holder: str = "Asha Verma") -> str:
+    """What a CORRECT verifier model answers for demo_statement(transactions, ...): the key
+    facts as printed (parsers/verify.py asks for exactly these). For FakeGateway tests."""
+    import json
+
+    return json.dumps({
+        "account_holder": holder, "account_number": account, "ifsc": "DEMO0001234", "branch": "MG Road",
+        "period_from": "01/09/2026", "period_to": "30/09/2026",
+        "first_transaction": {"date": transactions[0]["date"], "description": transactions[0]["description"]},
+        "last_transaction": {"date": transactions[-1]["date"], "description": transactions[-1]["description"]},
+    })

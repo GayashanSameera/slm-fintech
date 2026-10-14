@@ -152,3 +152,18 @@ def test_unrecognised_type_fails_job():
         _extract(gw, None)
     assert exc.value.code == "unrecognised_document_type"
     assert len(exc.value.calls) == 2
+
+
+def test_usage_summary_counts_every_call_per_model():
+    from app.gateway.base import GatewayResult
+    from app.usage import summarize
+
+    calls = [GatewayResult("", NOVA, 1000, 20), GatewayResult("", HAIKU, 2000, 400, cache_read_tokens=3000),
+             GatewayResult("", HAIKU, 2100, 500, cache_read_tokens=3000)]
+    s = summarize(calls)
+    assert (s["model_calls"], s["input_tokens"], s["output_tokens"], s["cache_read_tokens"]) == (3, 5100, 920, 6000)
+    assert s["by_model"] == [
+        {"model_id": NOVA, "calls": 1, "input_tokens": 1000, "output_tokens": 20, "cache_read_tokens": 0},
+        {"model_id": HAIKU, "calls": 2, "input_tokens": 4100, "output_tokens": 900, "cache_read_tokens": 6000}]
+    assert summarize([]) == {"model_calls": 0, "input_tokens": 0, "output_tokens": 0,
+                             "cache_read_tokens": 0, "by_model": []}     # checks_only Rung 0: no model at all

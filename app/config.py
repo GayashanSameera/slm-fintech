@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     max_wait_seconds: int = 40                 # the "wait for result" ceiling (FR-2.14)
     upload_url_ttl_seconds: int = 900          # presigned upload URL validity: 15 minutes
 
+    # --- Browser access (CORS) ---------------------------------------------------
+    # Comma-separated origins allowed to call the API from a web page, e.g.
+    # "https://portal.example.com". Empty (default) = no browser access: tenants call
+    # the API from their servers. "*" is only for the proof-of-concept test page.
+    cors_origins: str = ""
+
     # --- Processing window (FR-5) ------------------------------------------------
     # "always" (default) or e.g. "Mon-Fri 09:00-19:00 Asia/Kolkata".
     processing_window: str = "always"

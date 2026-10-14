@@ -1,29 +1,54 @@
 """AI verification of a Rung 0 parser result (requirement FR-9.3).
 
-The cheapest model (Nova Lite) receives the statement pages AND the parser's
-JSON, and is asked to list ONLY the fields that do not match the document.
-Its answer is tiny ({"agree": true} or a short issue list), so verification
-costs ~USD 0.00025 per page.
+HOW IT WORKS: "read independently, compare in code".
+  1. The cheapest model (Nova Lite) reads a few KEY fields from the statement pages
+     itself: account holder, account number, IFSC, branch, period, and the first and
+     last transaction (date + description).
+  2. Our code compares its reading with the parser's result, field by field, after
+     normalising case, spaces and date formats.
+  3. Any mismatch rejects the parser result (the statement then goes to the AI ladder).
+
+Why these fields: amounts and balances are already PROVEN by the running-balance and
+coverage checks (checks.py, coverage.py). What arithmetic can't prove is who the
+statement belongs to, which account, which period, and whether the parser framed the
+rows correctly (first and last row). That is what an independent reading checks.
+The NUMBER of rows is not asked: models miscount (Nova Lite was one short every time),
+and coverage.py already compares the row count exactly against the PDF's text layer.
+
+Why not "show the model the parser's JSON and ask for differences" (the first design):
+in the first real AWS test (2026-10-14) Nova Lite reported identical values as
+differences, ignored the "at most 10 issues" rule and ran out of output tokens on a
+two-page statement. Reading a dozen fields is a task it does reliably; the comparison
+is done by code, which doesn't make mistakes. The answer is ~150 tokens whatever the
+statement's length, so verification costs ~USD 0.0002 per statement, and the parser's
+output is never sent to the model at all.
 
 Safety properties:
   * The verifier can only REJECT a parser result. It never changes a value.
-  * An unreadable or odd answer counts as DISAGREE: when in doubt, the statement
-    goes to full AI extraction.
-  * Issue details contain document values, so only the COUNT and the field PATHS
-    are logged, never `document_value`.
+  * An unreadable answer, or a required field the model couldn't read, counts as a
+    mismatch: when in doubt, the statement goes to full AI extraction.
+  * Only field NAMES are logged (`issue_paths`), never values from either side.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from app.core.logging import get_logger
 from app.gateway import GatewayResult, ModelGateway
 
-from ..prompts import VERIFY_SYSTEM, strip_code_fences, verify_instruction
+from ..prompts import VERIFY_INSTRUCTION, VERIFY_SYSTEM, strip_code_fences
+from ..schemas.base import parse_date
 
 log = get_logger(__name__)
+
+# Fields the model must read; if it can't, we can't confirm the parser, so it's a mismatch.
+REQUIRED = ("account_holder", "account_number", "ifsc", "period_from", "period_to")
+# Compared when the model returns them (some layouts don't print a branch).
+OPTIONAL = ("branch", "first_transaction.date", "first_transaction.description",
+            "last_transaction.date", "last_transaction.description")
 
 
 @dataclass
@@ -33,23 +58,67 @@ class VerifyResult:
     gateway_result: GatewayResult | None = None
 
 
-def verify(pages: list[dict], parsed_json: str, gateway: ModelGateway, model_id: str) -> VerifyResult:
+def parser_view(statement) -> dict:
+    """The same key fields, taken from the parser's result, for comparison."""
+    data = statement.model_dump(mode="json")
+    rows = data.get("transactions") or []
+    view = {k: data.get(k) for k in ("account_holder", "account_number", "ifsc", "branch", "period_from", "period_to")}
+    if rows:
+        view["first_transaction"] = {"date": rows[0].get("date"), "description": rows[0].get("description")}
+        view["last_transaction"] = {"date": rows[-1].get("date"), "description": rows[-1].get("description")}
+    return view
+
+
+def _get(data: dict, path: str):
+    node = data
+    for part in path.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return node
+
+
+def _normalise(value) -> str | None:
+    """Comparable form: dates -> ISO, everything else -> no spaces, case-folded."""
+    if value is None or value == "":
+        return None
+    try:
+        parsed = parse_date(value)
+        if parsed:
+            return parsed.isoformat()
+    except ValueError:
+        pass
+    return re.sub(r"\s+", "", str(value)).casefold()
+
+
+def compare(model_reading: dict, parsed: dict) -> list[str]:
+    """Paths where the model's independent reading doesn't confirm the parser."""
+    issues = []
+    for path in REQUIRED + OPTIONAL:
+        theirs, ours = _normalise(_get(model_reading, path)), _normalise(_get(parsed, path))
+        if theirs is None:
+            if path in REQUIRED:
+                issues.append(path)          # couldn't be confirmed
+            continue
+        if theirs != ours:
+            issues.append(path)
+    return issues
+
+
+def verify(pages: list[dict], statement, gateway: ModelGateway, model_id: str) -> VerifyResult:
     res = gateway.generate(
         model_id=model_id,
         system=VERIFY_SYSTEM,
         pages=pages,
-        instruction=verify_instruction(parsed_json),
+        instruction=VERIFY_INSTRUCTION,
         thinking=False,
-        max_tokens=800,
+        max_tokens=400,
     )
     try:
-        answer = json.loads(strip_code_fences(res.text))
-        agree = answer.get("agree") is True
-        issues = [] if agree else list(answer.get("issues") or [])
-        paths = [str(i.get("path", "?")) for i in issues if isinstance(i, dict)]
-        if not agree and not paths:
-            paths = ["_unspecified"]
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        agree, paths = False, ["_verifier_unreadable"]
-    log.info("rung0_verified", agree=agree, issue_count=len(paths), model_id=model_id)
+        reading = json.loads(strip_code_fences(res.text))
+        if not isinstance(reading, dict):
+            raise TypeError("not an object")
+        paths = compare(reading, parser_view(statement))
+    except (json.JSONDecodeError, TypeError):
+        paths = ["_verifier_unreadable"]
+    agree = not paths
+    log.info("rung0_verified", agree=agree, issue_count=len(paths), issue_paths=paths[:10], model_id=model_id)
     return VerifyResult(agree=agree, issue_paths=paths, gateway_result=res)

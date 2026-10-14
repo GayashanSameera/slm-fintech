@@ -138,6 +138,7 @@ def process_job(tenant_id: str, job_id: str, receive_count: int = 1) -> None:
             verified_by=outcome.verified_by,
             profile_id=profile.id,
             prompt_version=profile.prompt_version,
+            usage=usage.summarize(calls),          # returned to the tenant with the result
             **stored,
         )
 
@@ -158,10 +159,11 @@ def process_job(tenant_id: str, job_id: str, receive_count: int = 1) -> None:
                  duration_ms=int((time.monotonic() - started) * 1000))
 
     except JobError as e:
-        # A problem with the document itself: fail now, don't retry.
-        repo.fail(job_id, e.code)
-        blobs.delete(source)
+        # A problem with the document itself: fail now, don't retry. Models may still have
+        # been called (e.g. three unusable answers): those tokens are reported and metered.
         calls = getattr(e, "calls", calls)
+        repo.fail(job_id, e.code, usage=usage.summarize(calls))
+        blobs.delete(source)
         if calls:
             usage.record(tenant_id, pages=0, calls=calls, method="failed")
         webhooks.enqueue(tenant_id, job_id, "failed")

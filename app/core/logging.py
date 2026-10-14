@@ -34,6 +34,9 @@ ALLOWED_FIELDS = frozenset(
         "issue_count", "input_tokens", "output_tokens", "cache_read_tokens", "duration_ms",
         "attempt", "count", "queue", "flow", "method", "path", "http_status", "wait_s",
         "source", "warnings", "checks_failed", "event_type",
+        # Field PATHS the Rung 0 verifier flagged, e.g. "transactions[3].date". Paths are
+        # schema field names, never document values (verify.py never logs document_value).
+        "issue_paths",
     }
 )
 

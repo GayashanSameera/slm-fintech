@@ -1,9 +1,9 @@
 # ==============================================================================
-# Stack 3 of 4: APP  (deploy after `data`, `security`, and after pushing the image)
+# Stack 3 of 4: APP  (deploy after `data`, `security`, and after uploading the code zip)
 #
 # Everything that RUNS. All application code is AWS Lambda (NFR-O5): seven
-# functions, ONE container image, each function picking its entry point from
-# app/lambda_handlers.py through ImageConfig.Command.
+# functions, ONE zip package (scripts/build_lambda.py), each function picking its
+# entry point from app/lambda_handlers.py through its Handler setting.
 #
 #   Request path   WAF -> API Gateway (REST) -> authorizer Lambda -> api Lambda
 #   Upload path    S3 "Object Created" + GuardDuty scan result -> EventBridge -> intake Lambda
@@ -25,10 +25,10 @@ Description: SLM Fintech - app stack (API Gateway, WAF, Lambdas, SQS, EventBridg
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod]
-  ImageTag:
+    AllowedValues: [dev, prod, poc]
+  CodeKey:
     Type: String
-    Description: Tag of the image in the slm-<env> ECR repository (CI uses the git commit SHA).
+    Description: S3 key of the Lambda zip in the code bucket, e.g. lambda-983e9cc7b411093f.zip (set by scripts/deploy.sh).
 
   # --- API timing ------------------------------------------------------------------
   # API Gateway REST APIs stop waiting for the backend after 29 s by DEFAULT. The
@@ -43,6 +43,14 @@ Parameters:
     Type: Number
     Default: 25
     Description: SLM_MAX_WAIT_SECONDS. Must stay a few seconds below the integration timeout.
+
+  CorsAllowOrigin:
+    Type: String
+    Default: ""
+    Description: >
+      Web origin allowed to call the API (and upload to S3) from a BROWSER, e.g. https://portal.example.com.
+      Empty (default) = no browser access; tenants call the API from their servers. "*" only for the
+      proof-of-concept test page. CORS grants no access by itself: every call still needs an API key.
 
   # --- Throughput and protection ---------------------------------------------------
   ApiThrottleRate:     { Type: Number, Default: 50,   Description: Steady requests per second for the whole API }
@@ -69,6 +77,7 @@ Parameters:
 Conditions:
   HasWindow: !Not [!Equals [!Ref ProcessingWindow, always]]
   WafOn: !Equals [!Ref EnableWaf, "true"]
+  CorsOn: !Not [!Equals [!Ref CorsAllowOrigin, ""]]
 
 Resources:
   # ==============================================================================
@@ -319,7 +328,7 @@ Resources:
                 Resource: { "Fn::ImportValue": !Sub "slm-${Env}-TableStreamArn" }
 
   # ==============================================================================
-  # Lambda functions. Same image, different ImageConfig.Command.
+  # Lambda functions. Same zip package, different Handler.
   # arm64 = Graviton (cheaper). No VPC (architecture §8.5).
   #
   # Environment: every SLM_* variable is read by app/config.py. CloudFormation
@@ -330,9 +339,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-authorizer
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.authorizer] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.authorizer
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 256
       Timeout: 5
@@ -350,9 +359,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-api
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.api] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.api
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 1024
       Timeout: 45                               # > the longest wait (40 s) plus overhead
@@ -360,6 +369,7 @@ Resources:
       LoggingConfig: { LogGroup: !Ref ApiLogs }
       Environment:
         Variables:
+          SLM_CORS_ORIGINS: !Ref CorsAllowOrigin
           SLM_ENV: !Ref Env
           SLM_REGION: !Ref AWS::Region
           SLM_LOG_LEVEL: !Ref LogLevel
@@ -379,9 +389,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-worker
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.worker] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.worker
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 2048
       Timeout: 120
@@ -408,9 +418,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-intake
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.intake] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.intake
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 128
       Timeout: 10
@@ -437,9 +447,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-webhook
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.webhook] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.webhook
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 128
       Timeout: 15
@@ -466,9 +476,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-retention-cleaner
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.retention_cleaner] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.retention_cleaner
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 128
       Timeout: 30
@@ -495,9 +505,9 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub slm-${Env}-scan-sweeper
-      PackageType: Image
-      Code: { ImageUri: !Sub ["${Repo}:${ImageTag}", { Repo: { "Fn::ImportValue": !Sub "slm-${Env}-ImageRepositoryUri" } }] }
-      ImageConfig: { Command: [app.lambda_handlers.scan_sweeper] }
+      Runtime: python3.12
+      Handler: app.lambda_handlers.scan_sweeper
+      Code: { S3Bucket: { "Fn::ImportValue": !Sub "slm-${Env}-CodeBucketName" }, S3Key: !Ref CodeKey }
       Architectures: [arm64]
       MemorySize: 128
       Timeout: 60
@@ -796,6 +806,48 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations"
 
+  # Browser pre-flight (CORS), only when CorsAllowOrigin is set. Before a page sends
+  # a request with an Authorization header, the browser asks "may I?" with an OPTIONS
+  # request that carries NO key. It must be answered here, without the authorizer
+  # (which would refuse it) and without running our code. MOCK = API Gateway answers itself.
+  V1ProxyOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Condition: CorsOn
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_59
+            comment: "CORS pre-flight must be unauthenticated by definition; it returns headers only, never data."
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref V1ProxyResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates: { application/json: '{"statusCode": 200}' }
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'"
+              method.response.header.Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Max-Age: "'600'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Max-Age: true
+
+  # A Deployment may only be created after every method exists. DependsOn can't name a
+  # resource that has a Condition, so this empty handle carries that dependency instead.
+  OptionalMethodsReady:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Metadata:
+      OptionsMethod: !If [CorsOn, !Ref V1ProxyOptionsMethod, ""]
+
   # Errors produced by API Gateway itself (before our code runs) use the SAME
   # body shape as the app's errors: {"error": {"code": ..., "message": ...}}.
   UnauthorizedResponse:
@@ -803,6 +855,10 @@ Resources:
     Properties:
       RestApiId: !Ref Api
       ResponseType: UNAUTHORIZED
+      ResponseParameters: !If
+        - CorsOn
+        - { gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'" }
+        - !Ref AWS::NoValue
       StatusCode: "401"
       ResponseTemplates:
         application/json: '{"error": {"code": "unauthorized", "message": "Missing or invalid API key."}}'
@@ -812,6 +868,10 @@ Resources:
     Properties:
       RestApiId: !Ref Api
       ResponseType: ACCESS_DENIED                # authorizer Deny = suspended tenant (FR-1.6)
+      ResponseParameters: !If
+        - CorsOn
+        - { gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'" }
+        - !Ref AWS::NoValue
       StatusCode: "403"
       ResponseTemplates:
         application/json: '{"error": {"code": "tenant_suspended", "message": "This account is not active."}}'
@@ -821,6 +881,10 @@ Resources:
     Properties:
       RestApiId: !Ref Api
       ResponseType: THROTTLED
+      ResponseParameters: !If
+        - CorsOn
+        - { gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'" }
+        - !Ref AWS::NoValue
       StatusCode: "429"
       ResponseTemplates:
         application/json: '{"error": {"code": "rate_limited", "message": "Too many requests. Retry later."}}'
@@ -830,12 +894,18 @@ Resources:
     Properties:
       RestApiId: !Ref Api
       ResponseType: DEFAULT_5XX
+      ResponseParameters: !If
+        - CorsOn
+        - { gatewayresponse.header.Access-Control-Allow-Origin: !Sub "'${CorsAllowOrigin}'" }
+        - !Ref AWS::NoValue
       ResponseTemplates:
         application/json: '{"error": {"code": "internal_error", "message": "Something went wrong. Please retry."}}'
 
-  ApiDeployment:
+  # V2: renamed when the CORS pre-flight route was added (see REDEPLOYING above).
+  ApiDeploymentV2:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [V1ProxyMethod, HealthMethod, UnauthorizedResponse, AccessDeniedResponse, ThrottledResponse, Default5xxResponse]
+    DependsOn: [V1ProxyMethod, HealthMethod, OptionalMethodsReady, UnauthorizedResponse, AccessDeniedResponse,
+                ThrottledResponse, Default5xxResponse]
     Properties:
       RestApiId: !Ref Api
 
@@ -866,7 +936,7 @@ Resources:
     DependsOn: ApiGatewayAccount
     Properties:
       RestApiId: !Ref Api
-      DeploymentId: !Ref ApiDeployment
+      DeploymentId: !Ref ApiDeploymentV2
       StageName: !Ref Env
       MethodSettings:
         - ResourcePath: "/*"

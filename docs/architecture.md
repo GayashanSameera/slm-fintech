@@ -792,11 +792,18 @@ Example final response:
   "page_count": 2,
   "warnings": [],
   "result": { "invoice_number": "INV-2026-0042", "invoice_date": "2026-09-30", "total": "11800.00", "…": "…" },
+  "usage": {
+    "model_calls": 1, "input_tokens": 4630, "output_tokens": 410, "cache_read_tokens": 3000,
+    "by_model": [{ "model_id": "us.anthropic.claude-haiku-5-5", "calls": 1, "input_tokens": 4630,
+                   "output_tokens": 410, "cache_read_tokens": 3000 }]
+  },
   "created_at": "2026-10-13T10:15:02Z",
   "uploaded_at": "2026-10-13T10:15:04Z",
   "completed_at": "2026-10-13T10:15:14Z"
 }
 ```
+
+`usage` (present once the job is final, also on `failed` jobs that called a model) counts every model call made for the job: type detection, the Rung 0 verifier and every attempt on the AI ladder, in total and per model. A Rung 0 statement with `checks_only` verification reports zero calls. When an identical file is answered from an earlier job (dedup, FR-2.11), the response carries `"deduplicated": true` and `usage` describes the earlier job: that request itself used no tokens.
 
 #### How long until the result is ready
 
@@ -911,6 +918,7 @@ Content-Type: application/json
     "total": "11800.00",
     "…": "…"
   },
+  "usage": { "model_calls": 1, "input_tokens": 4630, "output_tokens": 410, "cache_read_tokens": 3000, "by_model": ["…"] },
   "created_at": "2026-10-13T10:15:02Z",
   "completed_at": "2026-10-13T10:15:11Z"
 }

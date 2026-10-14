@@ -8,7 +8,7 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 |---|---|
 | Tool | **AWS CloudFormation**, plain YAML templates, deployed with the AWS CLI |
 | Region | `us-east-1` (N. Virginia). Bedrock inference may also run in `us-east-2` and `us-west-2` |
-| Environments | `dev` and `prod`, ideally in **separate AWS accounts** |
+| Environments | `dev` and `prod` (four stacks each), ideally in **separate AWS accounts**; plus the one-stack **POC** (next section) |
 | Cost | ~USD 20/month infrastructure in prod at 1,000 pages per business day; ~USD 5 for dev (section 6) |
 | First tenant | **LYNEAR** (section 8.3) |
 | How the code uses these resources | [docs/implementation-flow.md](../../docs/implementation-flow.md), stage by stage |
@@ -34,6 +34,40 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 
 ---
 
+## Proof of concept: everything in ONE stack (current)
+
+For the proof of concept the whole platform runs as **one stack, `slm-poc`**, so that one command removes everything afterwards. It is **generated** from the four templates below by `scripts/build_single_stack.py`, so the two can never drift apart. In it, **everything is deleted with the stack**: no retained tables, keys, buckets or secrets.
+
+| | |
+|---|---|
+| Account / region | `lyndev` (866726123372) / **us-east-1**: switch the console's region selector to N. Virginia |
+| Stack | `slm-poc` (CloudFormation → Stacks) |
+| Outside the stack | one bucket, `slm-poc-code-<account>-us-east-1`, for the Lambda zip and the template (`down` deletes it) |
+| API | the `ApiUrl` output of `slm-poc` |
+| Tenant | LYNEAR |
+
+```bash
+uv run python scripts/poc.py up     --profile lyndev   # build zip, generate template, deploy, onboard LYNEAR
+uv run python scripts/poc.py smoke  --profile lyndev   # real documents through the real API
+uv run python scripts/poc.py status --profile lyndev
+uv run python scripts/poc.py down   --profile lyndev   # delete EVERYTHING (asks you to type the stack name)
+```
+
+**Test page.** Open `tools/poc_ui/index.html` in a browser, straight from disk; no server to run. `up` writes `tools/poc_ui/config.local.js` (API URL and LYNEAR's test key) and `samples.js` (synthetic sample documents). Both are gitignored. The page calls API Gateway and S3 directly, which the POC allows with CORS (`CorsAllowOrigin=*`). The key sits in your browser: fine for a POC test key, never do it with a production key.
+
+What `down` does beyond deleting the stack:
+- empties the buckets;
+- deletes the secrets immediately;
+- removes stray log groups;
+- resets the API Gateway logging-role setting;
+- deletes the test page's settings.
+
+AWS deletes the three KMS keys itself after 7 days (about USD 0.25).
+
+**Before Claude models work in an account**, someone with AWS Marketplace permissions must enable them once: Bedrock console → *Model catalog* → open **Claude Haiku 5.5**, then **Claude Sonnet 5.5** → request access / subscribe. Until then the AI ladder fails with `AccessDeniedException` ("not authorized to perform the required AWS Marketplace actions"). Amazon Nova Lite needs no subscription.
+
+---
+
 ## 1. Concepts in five minutes
 
 | Term | What it means here |
@@ -44,7 +78,7 @@ It is written for someone new to the project and new to AWS. Read sections 1 to 
 | **Output / Export** | A value a stack publishes, e.g. the table name. Another stack reads it with `Fn::ImportValue`. This is how our four stacks connect. |
 | **Change set** | A preview: "these resources will be added, changed, or replaced". `scripts/deploy.sh` always shows one and asks before applying it. |
 | **Lambda function** | Our code, run by AWS only when something triggers it. No servers; billed per millisecond. |
-| **Container image** | A packaged copy of our code plus its libraries. All 7 functions run the **same** image (`Dockerfile`), each starting a different entry point. |
+| **Code package** | One zip file with our code plus its libraries, built by `scripts/build_lambda.py` (no Docker needed). All 7 functions run the **same** zip, each with a different `Handler`. |
 | **IAM role** | An identity with a list of permissions. Each function has its own role and can do only what is listed. |
 | **KMS key** | An encryption key AWS stores for us. Data is encrypted with it; using the key needs permission and is logged. |
 | **Intrinsic functions** | `!Ref`, `!GetAtt`, `!Sub`, `Fn::ImportValue`: template helpers that insert names, ARNs and text. |
@@ -106,7 +140,7 @@ The serverless resources are in **`app.yaml`**: the 7 Lambda functions, their tr
 
 ## 4. The four stacks, resource by resource
 
-Deploy order is **data → security → (push image) → app → observability**. Each stack imports values exported by the ones before it.
+Deploy order is **data → security → app → observability** (`deploy.sh` builds and uploads the code zip for `app`). Each stack imports values exported by the ones before it.
 
 ### 4.1 `data.yaml`: everything that stores something (stack `slm-<env>-data`)
 
@@ -120,7 +154,7 @@ These resources hold data, so they are separate from the code. You can delete an
 | `Table` | `slm-<env>-main` | The single DynamoDB table (architecture §7.1). Keys `PK`/`SK`. On-demand billing (no idle cost). **TTL** on `expires_at` deletes expired jobs for free. **Stream** (old image) feeds the retention cleaner. **PITR** allows restoring to any second in the last 35 days. Deletion protection is on. Sparse GSI **`pending`**: only waiting jobs carry `pending_pk`, so the sweeper reads very little. |
 | `Bucket` | `slm-<env>-docs-<account>-<region>` | All tenant files under `tenants/<tenant_id>/`. Public access fully blocked; ACLs off. Default encryption with the documents key and **Bucket Key** (about 99% fewer KMS calls). **EventBridge notifications on**, which the intake function and GuardDuty need. Backstop lifecycle deletes anything older than 400 days. **No versioning**, on purpose: a deleted document must really be gone. |
 | `BucketPolicy` | | Denies any non-TLS request, and any upload that names a KMS key other than ours. |
-| `ImageRepository` | ECR `slm-<env>` | Holds the container image. Tags are **immutable** (a tag always means the same image), every push is scanned for known vulnerabilities, and the last 10 images are kept. |
+| `CodeBucket` | `slm-<env>-code-<account>-<region>` | Holds the Lambda zip packages (`lambda-<content-hash>.zip`) and large templates. Old packages expire after 90 days. |
 
 ### 4.2 `security.yaml`: who may touch tenant data (stack `slm-<env>-security`)
 
@@ -143,7 +177,7 @@ These resources hold data, so they are separate from the code. You can delete an
 
 **Log groups.** One per function, created *before* the functions so we control encryption and retention: 30 days, but 180 days for `api` because it carries the audit records. Plus the API Gateway access log (180 days). Logs never contain document content: the app's logger only allows a fixed list of fields.
 
-**The 7 functions** (all arm64, no VPC, the same image):
+**The 7 functions** (all arm64, Python 3.12, no VPC, the same zip package):
 
 | Function | Entry point | Memory / timeout | Triggered by | Its role may also |
 |---|---|---|---|---|
@@ -252,7 +286,7 @@ Full model in [docs/cost.md](../../docs/cost.md) §4.2. Prod at 1,000 pages per 
 | Secrets Manager (pepper + LYNEAR webhook) | 0.86 |
 | CloudWatch (6 alarms, logs) | 0.81 |
 | SQS (mostly Lambda's idle long-polling) | 0.40 |
-| DynamoDB, S3, ECR, API Gateway, CloudTrail | 0.58 |
+| DynamoDB, S3 (documents + code), API Gateway, CloudTrail | 0.58 |
 | EventBridge, Scheduler, SNS, Budgets | 0.00 |
 | **Total** | **~20 gross, ~15.50 net** |
 
@@ -284,7 +318,7 @@ Do these in order; most take minutes, the quota requests can take days.
 | 6 | Make sure Bedrock **model invocation logging is OFF** (Bedrock console → Settings). | It would copy documents into logs. The `SecurityChangeRule` alerts if anyone turns it on later. |
 | 7 | Decide **CloudTrail**: if your organisation already has an organisation trail, set `"CreateTrail": "false"` in `params/<env>.json`. | Avoids a duplicate trail. |
 | 8 | Put a real address in `"AlertEmail"` in `params/<env>.json`. | Alarms and budget alerts go there. |
-| 9 | Install tools: AWS CLI v2, Docker with buildx (arm64 builds), Python 3, `uv`. Then `uvx cfn-lint --version`. | `scripts/deploy.sh` needs bash 4+ (Linux, or Homebrew bash on macOS). |
+| 9 | Install tools: AWS CLI v2, Python 3, `uv` (no Docker needed). Then `uvx cfn-lint --version`. | `scripts/deploy.sh` needs bash 4+ (Linux, or Homebrew bash on macOS). |
 | 10 | Sign in with admin credentials for the target account: `aws sts get-caller-identity`. | Creating IAM roles needs admin rights. |
 
 ---
@@ -302,15 +336,9 @@ scripts/deploy.sh dev data
 # 2. Tenant-data role, pepper secret, GuardDuty role, CloudTrail (~2 min)
 scripts/deploy.sh dev security
 
-# 3. Build the ONE image for all functions and push it to ECR. The tag is the git commit.
-TAG=$(git rev-parse --short HEAD)
-REPO=$(aws cloudformation list-exports --query "Exports[?Name=='slm-dev-ImageRepositoryUri'].Value" --output text)
-aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
-docker build --platform linux/arm64 -t "$REPO:$TAG" .
-docker push "$REPO:$TAG"
-
-# 4. Functions, queues, API, WAF, GuardDuty plan (~5 min)
-scripts/deploy.sh dev app "$TAG"
+# 3. Functions, queues, API, WAF, GuardDuty plan (~5 min). deploy.sh builds the code zip
+#    (scripts/build_lambda.py, no Docker) and uploads it to the code bucket first.
+scripts/deploy.sh dev app
 
 # 5. Alarms, budget, dashboard, security alerts (~1 min). Then CONFIRM the SNS email.
 scripts/deploy.sh dev observability
@@ -351,22 +379,11 @@ uv run python scripts/create_tenant.py --env dev --name LYNEAR
 
 ## 9. Releasing a new version, and rolling back
 
-**Release** = steps 3 and 4 of section 8.1 with a new git commit:
-
-```bash
-TAG=$(git rev-parse --short HEAD)
-docker build --platform linux/arm64 -t "$REPO:$TAG" . && docker push "$REPO:$TAG"
-scripts/deploy.sh prod app "$TAG"
-```
+**Release** = step 3 of section 8.1 again: `scripts/deploy.sh prod app`. It rebuilds the zip; its name is a hash of its contents, so unchanged code is not uploaded again.
 
 The change set should show only the 7 `AWS::Lambda::Function` resources as `Modify` with `Replacement = False`.
 
-**Rollback** = deploy the previous tag again. Tags are immutable and the last 10 images are kept:
-
-```bash
-aws ecr describe-images --repository-name slm-prod --query "sort_by(imageDetails,&imagePushedAt)[-5:].imageTags"
-scripts/deploy.sh prod app <previous-tag>
-```
+**Rollback** = check out the previous release's commit and run `scripts/deploy.sh prod app` again (old packages stay in the code bucket for 90 days).
 
 If a stack update **fails**, CloudFormation rolls back to the previous working state by itself. Check the stack's **Events** tab for the first `FAILED` line.
 
@@ -381,7 +398,8 @@ If a stack update **fails**, CloudFormation rolls back to the previous working s
 | all | `Env` | (none) | `dev` or `prod`; part of every resource name and export |
 | data, security | `EnforceTenantEncryptionContext` | `false` | KMS decrypts only for the matching tenant session; turns S3 Bucket Key off. **Must be equal in both stacks.** |
 | security | `CreateTrail` | `true` | Create this account's CloudTrail trail |
-| app | `ImageTag` | (none) | ECR image tag to run (passed by `deploy.sh`) |
+| app | `CodeKey` | (none) | S3 key of the Lambda zip (set by `deploy.sh`) |
+| data, app | `CorsAllowOrigin` | `""` | Web origin allowed to call the API from a browser. Empty = none. `*` only for the POC test page |
 | app | `ApiIntegrationTimeoutMs` | `29000` | API Gateway wait for the api function. 45000 after the quota increase |
 | app | `MaxWaitSeconds` | `25` | Longest `?wait=`; keep a few seconds below the timeout. 40 after the quota increase |
 | app | `ApiThrottleRate` / `ApiThrottleBurst` | `50` / `100` | Requests per second for the whole API |
@@ -409,7 +427,7 @@ cd ../.. && uv run pytest -q && uv run ruff check .
 
 All must pass. Current result: cfn-lint clean; checkov **174 passed, 0 failed, 11 skipped**. Every skip has its reason written down:
 - for all Lambdas, in `.checkov.yaml`: no VPC, no async DLQ, no reserved concurrency, environment variables without a customer-managed key;
-- for single resources, in their `Metadata`: KMS principal `*` limited to the account, S3 versioning off, ECR without KMS, no API cache, no X-Ray, public `/healthz`, unencrypted alerts topic, trail-bucket logging.
+- for single resources, in their `Metadata`: KMS principal `*` limited to the account, S3 versioning off, code bucket without access logs or versioning, no API cache, no X-Ray, public `/healthz`, unencrypted alerts topic, trail-bucket logging.
 
 When you add a skip, write **why** next to it.
 
@@ -432,7 +450,7 @@ done
 - the documents bucket and trail bucket (empty them first);
 - the pepper secret.
 
-The ECR repository must be empty before its stack can delete it.
+The code bucket must be emptied before the data stack can delete it.
 
 ---
 
@@ -441,7 +459,7 @@ The ECR repository must be empty before its stack can delete it.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `deploy.sh`: "Export slm-dev-X cannot be updated/deleted as it is in use" | A later stack imports that value | Change or delete the importing stack first (section 12 order) |
-| `app` stack fails creating a function: image not found | Image not pushed, wrong tag, or built for x86 | Push again with `--platform linux/arm64`; pass the exact tag |
+| `app` stack fails creating a function: code not found | Zip not uploaded, or wrong `CodeKey` | Run `scripts/deploy.sh <env> app` (it builds and uploads); don't pass `CodeKey` by hand |
 | `app` stack: "CloudWatch Logs role ARN must be set in account settings" | `ApiGatewayAccount` not yet applied | Re-run; the stage already depends on it. If another stack owns this setting, remove `ApiGatewayAccount` and `ApiGatewayCloudWatchRole` from `app.yaml` |
 | `security` stack: trail creation fails | An organisation trail exists, or the bucket policy is not ready | Set `CreateTrail=false`, or re-run once |
 | Every API call returns **401** | Missing header, or not `Authorization: Bearer slm_...` | Check the header; the key must be from the same environment |

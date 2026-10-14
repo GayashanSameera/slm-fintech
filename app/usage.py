@@ -32,6 +32,36 @@ def estimate_cost(call: GatewayResult) -> float:
     return 0.0   # local/fake models cost nothing
 
 
+def summarize(calls: list[GatewayResult]) -> dict:
+    """Token usage of ONE job, as returned to the tenant in `usage` (requirement FR-7.1).
+
+    Counts every model call made for the job: document-type detection, the Rung 0
+    verifier and every attempt on the AI ladder. Per model too, because models are
+    priced differently. Only counts: no prompts, answers or document content.
+
+        {"model_calls": 2, "input_tokens": 5466, "output_tokens": 160, "cache_read_tokens": 0,
+         "by_model": [{"model_id": "us.amazon.nova-lite-v1:0", "calls": 1, ...}, ...]}
+
+    A Rung 0 statement with tenant setting `checks_only` makes no model call at all:
+    every count is 0 and `by_model` is empty.
+    """
+    per_model: dict[str, dict] = {}
+    for c in calls:
+        m = per_model.setdefault(c.model_id, {"model_id": c.model_id, "calls": 0, "input_tokens": 0,
+                                              "output_tokens": 0, "cache_read_tokens": 0})
+        m["calls"] += 1
+        m["input_tokens"] += c.input_tokens
+        m["output_tokens"] += c.output_tokens
+        m["cache_read_tokens"] += c.cache_read_tokens
+    return {
+        "model_calls": len(calls),
+        "input_tokens": sum(c.input_tokens for c in calls),
+        "output_tokens": sum(c.output_tokens for c in calls),
+        "cache_read_tokens": sum(c.cache_read_tokens for c in calls),
+        "by_model": list(per_model.values()),       # in the order the models were first called
+    }
+
+
 def record(tenant_id: str, *, pages: int, calls: list[GatewayResult], method: str) -> None:
     """Add one finished job's usage to today's counters."""
     table = dynamodb_table(tenant_session(tenant_id))

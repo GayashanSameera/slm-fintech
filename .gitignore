@@ -1,0 +1,56 @@
+# ------------------------------------------------------------------------------
+# Files git must never track. A rule here only affects UNTRACKED files: to stop
+# tracking a file that was already committed, run `git rm --cached <file>`.
+# ------------------------------------------------------------------------------
+
+# --- Secrets and local settings: API keys, webhook secrets. NEVER commit. --------
+.env
+.env.*
+!.env.example
+# written by scripts/poc.py up: holds LYNEAR's API key
+tools/poc_ui/config.local.js
+*.pem
+*.key
+
+# --- Python ----------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# --- Tool caches and test output -------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Build output ----------------------------------------------------------------
+# Lambda zip packages (scripts/build_lambda.py)
+dist/
+# generated single-stack template (scripts/build_single_stack.py)
+infra/cloudformation/build/
+# generated sample documents for the test page
+tools/poc_ui/samples.js
+node_modules/
+
+# --- Real documents and test data: never commit (tests use SYNTHETIC files only) --
+samples/real/
+evals/datasets/
+evals/runs/
+*.b64
+# local runs: uploaded documents and results
+data/
+
+# --- Logs --------------------------------------------------------------------------
+*.log
+
+# --- Editors and operating systems ---------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

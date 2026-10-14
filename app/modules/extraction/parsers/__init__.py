@@ -73,7 +73,7 @@ def try_rung0(*, data: bytes, prepared, gateway: ModelGateway, verifier_model: s
         # Tenant chose: these documents never go to any AI service (FR-9.4).
         return Rung0Outcome(statement, parser.parser_id, verified_by=None), calls, True
 
-    v = verify(prepared.pages, statement.model_dump_json(), gateway, verifier_model)
+    v = verify(prepared.pages, statement, gateway, verifier_model)
     if v.gateway_result:
         calls.append(v.gateway_result)
     if not v.agree:

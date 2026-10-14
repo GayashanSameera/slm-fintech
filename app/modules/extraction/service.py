@@ -88,6 +88,7 @@ PUBLIC_FIELDS = (
     "id", "status", "flow", "document_type", "document_type_source", "document_type_confidence",
     "schema_version", "page_count", "warnings", "method", "parser_id", "verified_by", "model_id",
     "created_at", "uploaded_at", "completed_at", "processing_starts_at",
+    "usage",           # tokens used by the job's model calls (usage.summarize), once it is final
 )
 
 
@@ -152,7 +153,11 @@ async def create_direct(principal, doc_type: str | None, data: bytes, wait: int)
         if previous and previous["status"] == "succeeded":
             audit(tenant_id=principal.tenant_id, key_id=principal.key_id, action="extraction.create",
                   resource_id=previous_id, result="ok:dedup")
-            return 200, public_job(previous, blobs), {}
+            body = public_job(previous, blobs)
+            # The earlier job's result: no model was called for THIS request. `usage` still
+            # shows what the original job used, so this flag stops it being counted twice.
+            body["deduplicated"] = True
+            return 200, body, {}
 
     job_id = new_job_id()
     blobs.put(keys.source_key(principal.tenant_id, job_id), data, content_type_for(kind))

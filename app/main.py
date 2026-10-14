@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from app.audit import audit
+from app.config import settings
 from app.core.errors import ApiError
 from app.core.logging import get_logger
 from app.modules.chat.api import router as chat_router
@@ -93,6 +95,20 @@ async def audit_every_request(request: Request, call_next):
 def healthz():
     return {"ok": True}
 
+
+# Browser access (CORS), only when SLM_CORS_ORIGINS is set (the POC test page).
+# Pre-flight OPTIONS requests are answered by API Gateway itself (app.yaml), because
+# they carry no API key and would otherwise be refused by the authorizer; this
+# middleware adds the CORS headers to the REAL responses. CORS gives no access by
+# itself: every call still needs a valid API key.
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["Location", "Retry-After"],
+    )
 
 app.include_router(extraction_router, prefix="/v1")
 app.include_router(chat_router, prefix="/v1")

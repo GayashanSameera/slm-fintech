@@ -241,7 +241,7 @@ Entry: [pipeline.py `extract_document`](../app/modules/extraction/pipeline.py#L1
 | 4. Schema | `BankStatement.model_validate` ([schemas/bank_statement.py](../app/modules/extraction/schemas/bank_statement.py)) | a date or amount can't be read (`schema_invalid`) |
 | 5. Arithmetic | [checks.py `check_bank_statement`](../app/modules/extraction/checks.py#L65) | running balance wrong on any row; opening + credits − debits ≠ closing; bad IFSC |
 | 6. Coverage | [coverage.py `coverage_problems`](../app/modules/extraction/parsers/coverage.py#L27) | parsed rows ≠ date-led lines on the pages; last balance ≠ closing; header field missing |
-| 7. AI check | [verify.py `verify`](../app/modules/extraction/parsers/verify.py#L36) with **Nova Lite** (max 800 output tokens) | the model lists any field that doesn't match the page, or its answer is unreadable (counts as disagree). The verifier can only **reject**, never change a value. |
+| 7. AI check | [verify.py `verify`](../app/modules/extraction/parsers/verify.py) with **Nova Lite** (~150 output tokens, temperature 0) | **Read independently, compare in code.** Nova reads the key facts itself (holder, account number, IFSC, branch, period, first and last transaction) without seeing the parser's output; [`compare`](../app/modules/extraction/parsers/verify.py) checks them against the parser (case, spaces and date formats normalised). Any mismatch, a required field it couldn't read, or an unreadable answer rejects. The verifier can only **reject**, never change a value. Amounts are not re-read: arithmetic already proved them. |
 
 - **Skipped verification:** with tenant setting `verification_mode = checks_only`, step 7 is skipped. The statement then never reaches any AI service.
 - **Accepted result:** method `parser`, `parser_id` (e.g. `demo_bank_v1`), `verified_by` = the Nova Lite model id.
@@ -312,7 +312,7 @@ Back in [`process_job`](../app/modules/extraction/worker.py#L92):
 
 | Step | Code | Detail |
 |---|---|---|
-| Store the result | [JobRepo.complete](../app/storage/jobs.py#L157) | `processing` → `succeeded`. The result sits **inline** in the item if ≤ 100 KB, otherwise in S3 `.../result.json` with `result_key`. Also stores how it was produced: `method`, `model_id`, `parser_id`, `verified_by`, `profile_id`, `prompt_version`, `warnings`, `page_count`. |
+| Store the result | [JobRepo.complete](../app/storage/jobs.py#L157) | `processing` → `succeeded`. The result sits **inline** in the item if ≤ 100 KB, otherwise in S3 `.../result.json` with `result_key`. Also stores how it was produced: `method`, `model_id`, `parser_id`, `verified_by`, `profile_id`, `prompt_version`, `warnings`, `page_count`, and **`usage`**: the job's token counts in total and per model ([usage.py `summarize`](../app/usage.py)), returned to the tenant with the result. |
 | Training copy | [`_keep_for_training`](../app/modules/extraction/worker.py#L80) → [Blobs.copy](../app/storage/blobs.py#L88) | Only with the tenant's written consent; never identity or KYC documents; never when the page shows Aadhaar markers; for detected types only at ≥ 0.95 confidence. |
 | Delete the source | [Blobs.delete](../app/storage/blobs.py#L72) | Always, once processed (or after a permanent failure). |
 | Dedup entry | [JobRepo.save_dedup](../app/storage/jobs.py#L203) | So the same file is answered instantly next time. |
@@ -324,7 +324,7 @@ Back in [`process_job`](../app/modules/extraction/worker.py#L92):
 
 | Raised | Meaning | Outcome |
 |---|---|---|
-| `JobError(code)` | the document itself is the problem | job `failed` with `code`, source deleted, webhook, **no retry** |
+| `JobError(code)` | the document itself is the problem | job `failed` with `code` and the `usage` of any model calls already made, source deleted, webhook, **no retry** |
 | `ScanPending` | GuardDuty tag not there yet | back to `queued`, retried; last attempt → `failed` / `scan_timeout` |
 | `TemporaryError` or any other exception | throttling, a timeout, a bug | back to `queued`, retried; after 3 attempts → `failed` / `processing_error`, and the message goes to the DLQ (alarm) |
 
@@ -462,8 +462,14 @@ Every arrow is a **conditional** DynamoDB update ([JobRepo.transition](../app/st
 3. **Retention wasn't exact (NFR-C5).** DynamoDB TTL deletes expired items only "usually within a few days", and no read checked `expires_at`, so an expired job and its result could still be fetched for days. `JobRepo` now treats expired items as deleted in `get`, `list` and `find_dedup`, and the worker skips a job that expired while queued.
 4. **Earlier today** (infrastructure review): tenant sessions now outlive the presigned URLs they sign.
 
-**Not verified yet (needs a real AWS account):**
-- the real Bedrock calls: the Converse request shape, Claude 5.5 `thinking` field and Nova Lite `cachePoint` support (noted in `bedrock.py`);
+**Verified on real AWS** (stack `slm-poc` in lyndev, 2026-10-14, `scripts/poc.py smoke`):
+- the whole presigned flow: S3 upload → GuardDuty scan → EventBridge → intake → worker → result in ~9 s;
+- Rung 0 on digital statements (1 and 2 pages) with Nova Lite verification, in ~5–8 s;
+- the AI ladder on Claude Haiku 5.5, plus Sonnet 5.5 and thinking retries;
+- the Converse request format per model (`bedrock.py` "CONFIRMED"): Claude 5.5 rejects `temperature`; thinking off is `disabled` on Haiku but `between_tools` on Sonnet;
+- CORS for the browser test page, and token usage in responses.
+
+**Not verified yet:**
 - the field names of GuardDuty's scan-result event (noted in `intake.py`);
 - IAM enforcement itself: moto doesn't evaluate IAM policies, so the tests prove the **code** isolation, and the AWS dev environment must prove the **IAM** layer (security.md §4.4);
 - the timing of the 40-second wait behind API Gateway.

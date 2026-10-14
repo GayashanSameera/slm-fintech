@@ -24,7 +24,7 @@ from PIL import Image
 
 from app.config import settings
 from app.storage import keys
-from tests.helpers.simple_pdf import demo_statement, sample_transactions
+from tests.helpers.simple_pdf import demo_reading, demo_statement, sample_transactions
 
 GOOD_INVOICE = json.dumps({
     "invoice_number": "INV-1", "invoice_date": "07/09/2026",
@@ -117,6 +117,10 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
     assert body["result"]["total"] == "1180.00"
     assert body["result"]["seller"]["pan"] == "XXXXXX234F"            # stage 11: masked
     assert body["page_count"] == 1 and body["model_id"].startswith("us.anthropic.claude-haiku")
+    # Token usage of the job (FakeGateway reports 100 in / 50 out per call): one Haiku call.
+    assert body["usage"] == {"model_calls": 1, "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0,
+                             "by_model": [{"model_id": body["model_id"], "calls": 1, "input_tokens": 100,
+                                           "output_tokens": 50, "cache_read_tokens": 0}]}
 
     # Stage 12: the source file is deleted after processing (no training consent).
     assert not Blobs(tenant_id).exists(keys.source_key(tenant_id, job["id"]))
@@ -139,6 +143,7 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
     again = client.post("/v1/extractions?wait=0", headers=_auth(api_key), json={
         "document_type": "invoice", "file": {"content_base64": base64.b64encode(png).decode()}})
     assert again.status_code == 200 and again.json()["id"] == job["id"]
+    assert again.json()["deduplicated"] is True              # usage shown is the ORIGINAL job's
     assert len(fake_gateway.calls) == calls_before
 
     # The job is listed (without the result), then deleted (FR-2.9).
@@ -150,8 +155,9 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
 
 def test_direct_flow_bank_statement_uses_rung0(client, tenant, fake_gateway):
     _, api_key = tenant
-    fake_gateway.queue('{"agree": true}')                # only the verifier is asked
-    pdf = demo_statement(sample_transactions(6))
+    rows = sample_transactions(6)
+    fake_gateway.queue(demo_reading(rows))               # only the verifier is asked
+    pdf = demo_statement(rows)
     files = {"file": ("statement.pdf", pdf, "application/pdf")}
     resp = client.post("/v1/extractions?wait=0", headers=_auth(api_key), files=files)   # multipart
     assert resp.status_code == 202, resp.text
@@ -162,6 +168,8 @@ def test_direct_flow_bank_statement_uses_rung0(client, tenant, fake_gateway):
     assert body["document_type"] == "bank_statement" and body["document_type_source"] == "parser"
     assert len(body["result"]["transactions"]) == 6
     assert [c["model_id"] for c in fake_gateway.calls] == ["us.amazon.nova-lite-v1:0"]
+    assert body["usage"]["model_calls"] == 1
+    assert [m["model_id"] for m in body["usage"]["by_model"]] == ["us.amazon.nova-lite-v1:0"]
 
 
 def test_direct_flow_unsupported_file_is_415_before_anything_is_stored(client, tenant):
@@ -180,6 +188,10 @@ def test_bad_document_fails_job_with_code(client, tenant, fake_gateway):
     _run_worker(settings.queue_background)
     body = client.get(f"/v1/extractions/{resp.json()['id']}", headers=_auth(api_key)).json()
     assert body["status"] == "failed" and body["error"] == {"code": "extraction_failed"}
+    # Three unusable answers still cost tokens: reported per model (Haiku x2, then Sonnet).
+    assert body["usage"]["model_calls"] == 3 and body["usage"]["input_tokens"] == 300
+    assert [(m["model_id"].split(".")[-1], m["calls"]) for m in body["usage"]["by_model"]] == [
+        ("claude-haiku-5-5", 2), ("claude-sonnet-5-5", 1)]
 
 
 # --- presigned flow: stages 4b, 5-13 ---------------------------------------------------------

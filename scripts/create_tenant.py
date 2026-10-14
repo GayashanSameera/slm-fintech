@@ -67,7 +67,7 @@ def configure_environment(env: str) -> None:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Create a tenant and its first API key.")
-    p.add_argument("--env", required=True, choices=["local", "dev", "prod"])
+    p.add_argument("--env", required=True, choices=["local", "dev", "prod", "poc"])
     p.add_argument("--name", required=True, help="Tenant display name, e.g. LYNEAR. Must be unique.")
     p.add_argument("--read-only", action="store_true", help="Key may only read results (no uploads).")
     p.add_argument("--retention-days", type=int, default=30, choices=[7, 30, 90, 365])

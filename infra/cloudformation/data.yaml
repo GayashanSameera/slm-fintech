@@ -7,7 +7,7 @@
 #   KMS keys       documents (S3 files), table (DynamoDB + SQS), logs (CloudWatch + secrets)
 #   DynamoDB       the single table `slm-<env>-main`            (architecture §7.1)
 #   S3             the documents bucket                         (architecture §7.2)
-#   ECR            the container image repository for all 7 Lambdas
+#   S3 (code)      the Lambda zip packages (one zip runs all 7 functions)
 #
 # Other stacks read these resources through the Outputs/Exports at the bottom
 # (Fn::ImportValue "slm-<env>-TableName" etc.).
@@ -15,12 +15,12 @@
 # Deploy:  see infra/cloudformation/README.md
 # ==============================================================================
 AWSTemplateFormatVersion: "2010-09-09"
-Description: SLM Fintech - data stack (KMS, DynamoDB, S3, ECR)
+Description: SLM Fintech - data stack (KMS, DynamoDB, S3 documents + code buckets)
 
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod]
+    AllowedValues: [dev, prod, poc]
     Description: Environment name. Used in every resource name and export.
 
   EnforceTenantEncryptionContext:
@@ -34,7 +34,16 @@ Parameters:
       {"tenant_id": ...}. Bucket Key off means one KMS request per object read/write
       (a few dollars a month at our volume instead of cents).
 
+  CorsAllowOrigin:
+    Type: String
+    Default: ""
+    Description: >
+      Web origin allowed to call the API (and upload to S3) from a BROWSER, e.g. https://portal.example.com.
+      Empty (default) = no browser access; tenants call the API from their servers. "*" only for the
+      proof-of-concept test page. CORS grants no access by itself: every call still needs an API key.
+
 Conditions:
+  CorsOn: !Not [!Equals [!Ref CorsAllowOrigin, ""]]
   EnforceContext: !Equals [!Ref EnforceTenantEncryptionContext, "true"]
 
 Resources:
@@ -254,6 +263,16 @@ Resources:
       NotificationConfiguration:
         EventBridgeConfiguration:
           EventBridgeEnabled: true
+      # Browser uploads (presigned POST) from the POC test page only. The signed upload
+      # policy still decides WHAT may be uploaded; CORS only lets the browser send it.
+      CorsConfiguration: !If
+        - CorsOn
+        - CorsRules:
+            - AllowedOrigins: [!Ref CorsAllowOrigin]
+              AllowedMethods: [POST]
+              AllowedHeaders: ["*"]
+              MaxAge: 600
+        - !Ref AWS::NoValue
       LifecycleConfiguration:
         Rules:
           # BACKSTOP only. Normal deletion is per job: the worker deletes the source
@@ -296,27 +315,38 @@ Resources:
                 s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt DocumentsKey.Arn
 
   # ----------------------------------------------------------------------------
-  # ECR repository for the ONE container image that all 7 Lambdas run
-  # (the Dockerfile in the repo root). It lives in this stack because the image
-  # must be pushed BEFORE the app stack can create the functions.
+  # Code bucket: holds the Lambda zip packages (scripts/build_lambda.py makes them,
+  # scripts/deploy.sh uploads them). It lives in this stack because the zip must
+  # exist BEFORE the app stack can create the functions.
+  # Packages are named by content hash (lambda-<hash>.zip), so a key always means
+  # the same code; old packages expire after 90 days (keep a few for rollbacks).
   # ----------------------------------------------------------------------------
-  ImageRepository:
+  CodeBucket:
+    Type: AWS::S3::Bucket
     Metadata:
       checkov:
         skip:
-          - id: CKV_AWS_136
-            comment: "The image contains application code only, never customer data. AES256 at rest is enough."
-    Type: AWS::ECR::Repository
+          - id: CKV_AWS_18
+            comment: "Holds build artifacts only (our own code), never customer data."
+          - id: CKV_AWS_21
+            comment: "Package names are content hashes, so an object is never overwritten; versioning adds nothing."
     Properties:
-      RepositoryName: !Sub slm-${Env}
-      ImageTagMutability: IMMUTABLE           # a tag always means the same image (tag = git SHA)
-      ImageScanningConfiguration: { ScanOnPush: true }   # basic vulnerability scan of every push
-      EncryptionConfiguration: { EncryptionType: AES256 }
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {"rules": [{"rulePriority": 1, "description": "keep the last 10 images (enough to roll back)",
-            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10},
-            "action": {"type": "expire"}}]}
+      BucketName: !Sub slm-${Env}-code-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }   # our code, not customer data
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-packages
+            Status: Enabled
+            ExpirationInDays: 90
 
 Outputs:
   TableName:        { Value: !Ref Table,                 Export: { Name: !Sub "slm-${Env}-TableName" } }
@@ -327,6 +357,6 @@ Outputs:
   DocumentsKeyArn:  { Value: !GetAtt DocumentsKey.Arn,   Export: { Name: !Sub "slm-${Env}-DocumentsKeyArn" } }
   TableKeyArn:      { Value: !GetAtt TableKey.Arn,       Export: { Name: !Sub "slm-${Env}-TableKeyArn" } }
   LogsKeyArn:       { Value: !GetAtt LogsKey.Arn,        Export: { Name: !Sub "slm-${Env}-LogsKeyArn" } }
-  ImageRepositoryUri:
-    Value: !GetAtt ImageRepository.RepositoryUri
-    Export: { Name: !Sub "slm-${Env}-ImageRepositoryUri" }
+  CodeBucketName:
+    Value: !Ref CodeBucket
+    Export: { Name: !Sub "slm-${Env}-CodeBucketName" }

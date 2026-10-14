@@ -172,7 +172,8 @@ class JobRepo:
         return self.transition(job_id, ["processing"], "succeeded", remove=remove,
                                completed_at=now_iso(), **fields)
 
-    def fail(self, job_id: str, error_code: str, from_statuses: list[str] | None = None) -> bool:
+    def fail(self, job_id: str, error_code: str, from_statuses: list[str] | None = None, **fields: Any) -> bool:
+        """-> failed with `error_code`. `fields` are stored too (e.g. the tokens a failed job used)."""
         return self.transition(
             job_id,
             from_statuses or ["processing", "queued", "scanning", "awaiting_upload"],
@@ -180,6 +181,7 @@ class JobRepo:
             remove=["pending_pk", "pending_deadline"],
             completed_at=now_iso(),
             error_code=error_code,
+            **fields,
         )
 
     # --- delete (FR-2.9) -----------------------------------------------------------

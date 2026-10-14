@@ -20,9 +20,14 @@ Security:
     infra/cloudformation/app.yaml); anything else fails with AccessDenied.
   * Bedrock keeps nothing (data-retention mode `none`, security.md §5).
 
-TO CONFIRM IN THE PHASE-0 SPIKE (architecture §6.4):
-  * the exact `thinking` field Claude 5.5 accepts through Converse,
-  * whether Nova Lite accepts `cachePoint` in `system` (we omit it for Nova to be safe).
+CONFIRMED ON REAL BEDROCK (lyndev, us-east-1, 2026-10-14):
+  * Turning thinking OFF is model-specific:
+        Claude Haiku 5.5   {"type": "disabled"}       ("between_tools" is rejected)
+        Claude Sonnet 5.5  {"type": "between_tools"}  ("disabled" is rejected)
+    Thinking ON for retries: {"type": "adaptive"} works on both.
+  * Claude 5.5 rejects `temperature` ("deprecated for this model"), so it is sent to
+    Nova Lite only (temperature 0 made Nova's verdicts repeatable).
+STILL TO CONFIRM: whether Nova Lite accepts `cachePoint` in `system` (omitted for Nova).
 """
 
 from __future__ import annotations
@@ -37,6 +42,56 @@ from app.storage.aws import platform_session
 from .base import GatewayResult
 
 APPROVED_PREFIXES = ("us.amazon.nova-lite", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5")
+
+# How to turn thinking OFF, per Claude model (see "CONFIRMED" above). A Claude model not
+# listed here gets no thinking field at all when thinking is off.
+_THINKING_OFF = {
+    "us.anthropic.claude-haiku-5-5": {"type": "disabled"},
+    "us.anthropic.claude-sonnet-5-5": {"type": "between_tools"},
+}
+
+
+def build_request(*, model_id: str, system: str, pages: list[dict], instruction: str,
+                  thinking: bool, max_tokens: int) -> dict:
+    """The Converse request for one call. Separate from the network call so it can be unit-tested.
+
+    messages = one user message: for every page "<page number='n'>", the image, the text
+    layer, "</page>"; then the instruction. Clear delimiters help the model treat document
+    text as DATA, not as instructions (prompt-injection defence, security.md §7.2).
+    """
+    content: list[dict] = []
+    for number, page in enumerate(pages, start=1):
+        content.append({"text": f"<page number='{number}'>"})
+        if page.get("image"):
+            content.append({"image": {"format": "jpeg", "source": {"bytes": page["image"]}}})
+        if page.get("text"):
+            content.append({"text": f"<text_layer>\n{page['text']}\n</text_layer>"})
+        content.append({"text": "</page>"})
+    content.append({"text": instruction})
+
+    claude = "anthropic" in model_id
+    system_blocks: list[dict] = [{"text": system}]
+    inference: dict = {"maxTokens": max_tokens}
+    extra: dict = {}
+    if claude:
+        # Cache the fixed system prompt: repeated input is billed at ~10% of the normal price.
+        system_blocks.append({"cachePoint": {"type": "default"}})
+        # Thinking on for retries (work out what went wrong), off otherwise (saves output tokens).
+        off = next((v for k, v in _THINKING_OFF.items() if model_id.startswith(k)), None)
+        if thinking:
+            extra["thinking"] = {"type": "adaptive"}
+        elif off:
+            extra["thinking"] = off
+    else:
+        # Temperature 0 = the same answer every time (Nova only: Claude 5.5 rejects the field).
+        inference["temperature"] = 0
+
+    request = {"modelId": model_id, "system": system_blocks,
+               "messages": [{"role": "user", "content": content}], "inferenceConfig": inference}
+    if extra:
+        request["additionalModelRequestFields"] = extra
+    return request
+
 
 # Bedrock errors worth retrying later (the job goes back to SQS).
 _RETRYABLE = {"ThrottlingException", "ServiceUnavailableException", "InternalServerException",
@@ -57,33 +112,8 @@ class BedrockGateway:
         if not model_id.startswith(APPROVED_PREFIXES):
             raise ValueError("model not approved")
 
-        content: list[dict] = []
-        for number, page in enumerate(pages, start=1):
-            content.append({"text": f"<page number='{number}'>"})
-            if page.get("image"):
-                content.append({"image": {"format": "jpeg", "source": {"bytes": page["image"]}}})
-            if page.get("text"):
-                content.append({"text": f"<text_layer>\n{page['text']}\n</text_layer>"})
-            content.append({"text": "</page>"})
-        content.append({"text": instruction})
-
-        system_blocks: list[dict] = [{"text": system}]
-        if "anthropic" in model_id:
-            system_blocks.append({"cachePoint": {"type": "default"}})
-
-        extra: dict = {}
-        if "anthropic" in model_id:
-            # Thinking off for normal extraction (saves output tokens); on for retries.
-            extra["thinking"] = {"type": "adaptive"} if thinking else {"type": "disabled"}
-
-        kwargs = dict(
-            modelId=model_id,
-            system=system_blocks,
-            messages=[{"role": "user", "content": content}],
-            inferenceConfig={"maxTokens": max_tokens},
-        )
-        if extra:
-            kwargs["additionalModelRequestFields"] = extra
+        kwargs = build_request(model_id=model_id, system=system, pages=pages, instruction=instruction,
+                               thinking=thinking, max_tokens=max_tokens)
 
         try:
             resp = self.client.converse(**kwargs)

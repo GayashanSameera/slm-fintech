@@ -19,11 +19,10 @@ from app.modules.extraction.pipeline import extract_document
 from app.modules.extraction.preprocess import preprocess
 from app.modules.extraction.profiles import load_profile
 from app.storage.tenants import TenantSettings
-from tests.helpers.simple_pdf import demo_statement, sample_transactions
+from tests.helpers.simple_pdf import demo_reading, demo_statement, sample_transactions
 
 PROFILE = load_profile("default")
 NOVA, HAIKU, _ = (r.model for r in PROFILE.ladder)
-AGREE = '{"agree": true}'
 
 
 def _run(pdf: bytes, gw: FakeGateway, *, requested_type: str | None = None, **tenant_settings):
@@ -42,8 +41,9 @@ def _ai_statement(rows: list[dict]) -> str:
 
 
 def test_accepted_statement_uses_parser_and_one_cheap_verify_call():
-    gw = FakeGateway().queue(AGREE)
-    out = _run(demo_statement(sample_transactions(5)), gw)
+    rows = sample_transactions(5)
+    gw = FakeGateway().queue(demo_reading(rows))
+    out = _run(demo_statement(rows), gw)
 
     assert out.method == "parser" and out.parser_id == "demo_bank_v1"
     assert out.doc_type == "bank_statement" and out.doc_type_source == "parser"
@@ -55,8 +55,9 @@ def test_accepted_statement_uses_parser_and_one_cheap_verify_call():
 
 
 def test_multi_page_statement():
-    gw = FakeGateway().queue(AGREE)
-    out = _run(demo_statement(sample_transactions(28), rows_per_page=10), gw)
+    rows = sample_transactions(28)
+    gw = FakeGateway().queue(demo_reading(rows))
+    out = _run(demo_statement(rows, rows_per_page=10), gw)
     assert out.method == "parser"
     assert len(out.result["transactions"]) == 28
 
@@ -71,7 +72,8 @@ def test_checks_only_tenant_never_calls_a_model():
 
 def test_verifier_disagreement_falls_back_to_haiku():
     rows = sample_transactions(5)
-    gw = FakeGateway().queue('{"agree": false, "issues": [{"path": "account_holder"}]}', _ai_statement(rows))
+    # The model reads a different account holder than the parser: reject the parser result.
+    gw = FakeGateway().queue(demo_reading(rows, holder="Someone Else"), _ai_statement(rows))
     out = _run(demo_statement(rows), gw)
     assert out.method == "ai"
     # Nova has already seen the document as verifier, so the ladder starts at Haiku.
@@ -100,3 +102,70 @@ def test_requested_other_type_skips_rung0():
     out = _run(demo_statement(sample_transactions(3)), gw, requested_type="invoice")
     assert out.method == "ai" and out.doc_type == "invoice"
     assert [c["model_id"] for c in gw.calls] == [HAIKU]
+
+
+# --- the verifier: "read independently, compare in code" (parsers/verify.py) ----------------
+# Redesigned after the first real AWS test, where Nova Lite asked to "list differences"
+# reported identical values and ran out of tokens on two-page statements.
+
+def _statement(n: int = 6):
+    from app.modules.extraction.parsers.fingerprint import pick_parser
+    from app.modules.extraction.schemas.bank_statement import BankStatement
+
+    rows = sample_transactions(n)
+    pdf = demo_statement(rows)
+    prepared = preprocess(pdf)
+    return rows, prepared, BankStatement.model_validate(pick_parser(prepared.pages[0]["text"]).parse(pdf))
+
+
+def _verify(answer: str, statement=None, n: int = 6):
+    from app.modules.extraction.parsers.verify import verify
+
+    rows, prepared, parsed = _statement(n)
+    gw = FakeGateway().queue(answer)
+    return verify(prepared.pages, statement or parsed, gw, NOVA), gw, rows, parsed
+
+
+def test_verifier_never_sees_the_parser_output():
+    from app.modules.extraction.prompts import VERIFY_INSTRUCTION
+
+    rows, *_ = _statement()
+    _, gw, _, _ = _verify(demo_reading(rows))
+    assert gw.calls[0]["instruction"] == VERIFY_INSTRUCTION          # an independent reading
+    assert "001234567890" not in gw.calls[0]["instruction"]
+
+
+def test_reading_in_other_formats_still_matches():
+    rows, *_ = _statement()
+    answer = json.loads(demo_reading(rows))
+    answer.update(account_holder="ASHA  VERMA", account_number="0012 3456 7890", period_from="2026-09-01")
+    v, *_ = _verify(json.dumps(answer))
+    assert v.agree is True and v.issue_paths == []
+
+
+def test_wrong_account_number_rejects():
+    rows, *_ = _statement()
+    v, *_ = _verify(demo_reading(rows, account="999988887777"))
+    assert v.agree is False and v.issue_paths == ["account_number"]
+
+
+def test_unreadable_required_field_rejects():
+    rows, *_ = _statement()
+    answer = json.loads(demo_reading(rows))
+    answer["account_holder"] = None                                    # the model couldn't find it
+    v, *_ = _verify(json.dumps(answer))
+    assert v.agree is False and v.issue_paths == ["account_holder"]
+
+
+def test_parser_that_missed_the_last_row_is_rejected():
+    rows, _, parsed = _statement()
+    short = parsed.model_copy(update={"transactions": parsed.transactions[:-1]})
+    v, *_ = _verify(demo_reading(rows), statement=short)
+    assert v.agree is False
+    assert v.issue_paths == ["last_transaction.date", "last_transaction.description"] or \
+        v.issue_paths == ["last_transaction.description"]          # same date can repeat
+
+
+def test_answer_that_is_not_an_object_counts_as_unreadable():
+    v, *_ = _verify('["agree"]')
+    assert v.agree is False and v.issue_paths == ["_verifier_unreadable"]
