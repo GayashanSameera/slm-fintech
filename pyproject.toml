@@ -1,0 +1,54 @@
+# ------------------------------------------------------------------------------
+# Python project definition for the SLM Fintech platform.
+#
+# `uv sync` reads this file, creates .venv/ and installs everything listed here.
+# Runtime dependencies go in [project.dependencies]; tools that are only needed
+# while developing (tests, linters, AWS mocks) go in [dependency-groups.dev].
+# ------------------------------------------------------------------------------
+[project]
+name = "slm-fintech"
+version = "0.1.0"
+description = "Multi-tenant document extraction API on AWS Lambda + Amazon Bedrock"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",          # web framework for the API
+  "python-multipart>=0.0.9", # lets FastAPI read multipart/form-data uploads
+  "mangum>=0.19",            # adapter that runs a FastAPI (ASGI) app inside AWS Lambda
+  "pydantic>=2.9",           # data validation: document schemas, request bodies
+  "pydantic-settings>=2.5",  # reads configuration from environment variables
+  "boto3>=1.35",             # AWS SDK: DynamoDB, S3, SQS, STS, Bedrock, Secrets Manager
+  "httpx>=0.27",             # HTTP client: Ollama (local model) and webhook delivery
+  "pypdfium2>=4.30",         # PDF open/render/text (Apache-2.0/BSD). NOT PyMuPDF (AGPL).
+  "pdfplumber>=0.11",        # words with positions, used by Rung 0 bank parsers (MIT)
+  "pillow>=10.4",            # image decoding, rotation, resizing
+  "python-docx>=1.1",        # reading DOCX files
+  "python-ulid>=2.7",        # unique, time-sortable IDs for jobs
+  "pyyaml>=6.0",             # model profile files
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "moto[s3,dynamodb,sqs,sts]>=5.0",  # in-memory AWS for tests: exercises the real boto3 code
+  "ruff>=0.7",
+  "uvicorn>=0.32",                   # local web server (docker compose / `make run`)
+]
+
+[tool.uv]
+package = false   # this is an application, not a library to publish
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "T20"]   # T20 forbids print(): use the SafeLogger instead
+ignore = ["E501", "B008"]   # B008: FastAPI uses Depends()/Query() in argument defaults by design
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["T20"]                  # command-line scripts may print to the terminal
+"tests/*" = ["T20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

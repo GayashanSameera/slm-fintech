@@ -1,0 +1,48 @@
+# ------------------------------------------------------------------------------
+# Model profile "default" (architecture §10.1).
+#
+# A profile says WHICH models extract documents and in WHAT ORDER.
+# The rule is "cheapest first" (requirement NFR-K4):
+#   Rung 0  Python parser (bank statements from known banks), verified by AI
+#   Rung 1  Amazon Nova Lite       (cheapest AI model)
+#   Rung 2  Claude Haiku 5.5
+#   Rung 3  Claude Sonnet 5.5      (most capable, ~20x Haiku's price)
+#
+# A document starts on `start_rung[doc_type]` and climbs ONE rung each time its
+# result fails validation or consistency checks, at most `max_climbs` times.
+#
+# start_rung values are PLACEHOLDERS until the phase-0 evaluation measures
+# which rung is accurate enough for each type (architecture §3.2, §10.3).
+# ------------------------------------------------------------------------------
+id: default-2026-10
+prompt_version: 1
+
+ladder:                                    # index 0 = first AI rung (Nova Lite)
+  - model: us.amazon.nova-lite-v1:0
+    thinking: false
+  - model: us.anthropic.claude-haiku-5-5
+    thinking: false
+  - model: us.anthropic.claude-sonnet-5-5
+    thinking: false
+
+max_climbs: 2
+
+# Retries on Claude Haiku run with thinking ON (it must work out what went wrong).
+think_on_retry: true
+
+start_rung:                                # index into `ladder`
+  invoice: 1
+  bank_statement: 1
+  payslip: 1
+  identity_document: 1
+  kyc_form: 1
+
+# Type detection when the tenant does not send document_type (architecture §6.0).
+classifier:
+  models: [us.amazon.nova-lite-v1:0, us.anthropic.claude-haiku-5-5]
+  min_confidence: 0.8
+
+rung0:                                     # Python parsers, verified by AI (§3.3)
+  enabled: true
+  verifier: us.amazon.nova-lite-v1:0
+  fallback_rung: 1                         # a rejected parser result enters the ladder at Haiku 5.5

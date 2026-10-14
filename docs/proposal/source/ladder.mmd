@@ -1,0 +1,12 @@
+flowchart LR
+  D(["Document"]) --> P{"Digital bank statement<br/>from a known bank?"}
+  P -->|"yes"| R0["Python parser<br/>+ AI verification<br/>(lowest cost)"]
+  P -->|"no"| N["Amazon Nova Lite"]
+  R0 -->|"verified"| R(["Result"])
+  R0 -->|"not verified"| H
+  N -->|"checks pass"| R
+  N -->|"checks fail"| H["Claude Haiku 5.5"]
+  H -->|"checks pass"| R
+  H -->|"checks fail"| S["Claude Sonnet 5.5<br/>most capable"]
+  S --> R
+  style R0 fill:#e7f5ee,stroke:#0f7a4f

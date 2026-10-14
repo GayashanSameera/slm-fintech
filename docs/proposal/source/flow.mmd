@@ -1,0 +1,9 @@
+flowchart LR
+  A(["Your system"]) -->|"① Upload over HTTPS<br/>with your API key"| B[("Encrypted storage<br/>S3 + KMS")]
+  B -->|"② Malware scan"| C["Extraction engine<br/>in our AWS account"]
+  C <-->|"③ Page images ⇄ JSON<br/>nothing retained"| D["AI model<br/>Amazon Bedrock"]
+  C -->|"④ Validate, check, mask"| E[("Masked result<br/>encrypted")]
+  E -->|"⑤ JSON result"| A
+  C -.->|"⑥ Original file deleted"| F["Deleted"]
+  style D fill:#fff4e5,stroke:#b26a00
+  style F fill:#f4f4f4,stroke:#9a9a9a,stroke-dasharray: 4 3
