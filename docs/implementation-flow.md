@@ -113,7 +113,7 @@ Optional fields:
 No application code runs here; this is all infrastructure (`app.yaml`).
 
 - **AWS WAF** (prod) blocks an IP above 1,000 requests per 5 minutes, known exploit patterns, and IPs with a bad reputation.
-- **API Gateway** (REST API) has one catch-all route, `ANY /v1/{proxy+}`, plus an unauthenticated `OPTIONS` route for browser pre-flight checks that the api function answers (CORS for exactly the console's origin). It throttles the whole API, refuses requests without an `Authorization` header (401) and forwards everything else, through the authorizer, to the api Lambda. Uploads with `multipart/form-data` pass through as binary.
+- **API Gateway** (REST API) has one catch-all route, `ANY /v1/{proxy+}`, plus an unauthenticated `OPTIONS` route for browser pre-flight checks that the api function answers (CORS is off unless `CorsAllowOrigin` is set). It throttles the whole API, refuses requests without an `Authorization` header (401) and forwards everything else, through the authorizer, to the api Lambda. Uploads with `multipart/form-data` pass through as binary.
 
 ---
 

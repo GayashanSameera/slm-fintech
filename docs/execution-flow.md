@@ -27,9 +27,8 @@ Contents:
 5. [Trace E: webhook delivery](#trace-e-webhook-delivery)
 6. [Trace F: retention clean-up](#trace-f-retention-clean-up)
 7. [Trace G: scan sweeper (every 5 minutes)](#trace-g-scan-sweeper-every-5-minutes)
-8. [Trace H: the browser console](#trace-h-the-browser-console)
-9. [Trace I: operator scripts](#trace-i-operator-scripts)
-10. [Timeline of one document, end to end](#10-timeline-of-one-document-end-to-end)
+8. [Trace H: operator scripts](#trace-h-operator-scripts)
+9. [Timeline of one document, end to end](#9-timeline-of-one-document-end-to-end)
 
 ---
 
@@ -95,7 +94,7 @@ A client sends a ≤ 4 MB file and waits for the result in the same request.
 1. `main.handler` is **Mangum**: it converts the API Gateway event into an ASGI request, keeping the original event in `scope["aws.event"]`.
 2. **Middleware, outermost first:**
    1. `main.audit_every_request` calls `call_next(request)` first and writes its record **after** the response (step 4).
-   2. `CORSMiddleware` (when configured) adds `Access-Control-Allow-Origin` to the response if the `Origin` header is the console's.
+   2. `CORSMiddleware` (when configured) adds `Access-Control-Allow-Origin` to the response if the `Origin` header is an allowed origin.
 3. **Routing:** `POST /v1/extractions` → `modules/extraction/api.create_extraction(request, wait, principal)`.
    1. **Dependency first:** `auth/dependencies.require_scope("extractions:write")`
       1. `current_principal(request)`: in AWS, it reads `requestContext.authorizer` from the event, with no database call. ✗ empty context → 401.
@@ -373,32 +372,7 @@ All four go through A1–A3.2. The authorizer is usually a **cache hit**, so it 
 
 ---
 
-## Trace H: the browser console
-
-The React app in `web/`, served from CloudFront.
-
-1. The browser loads `index.html` ⇢ CloudFront ⇢ the private S3 bucket (Origin Access Control), with the security headers (CSP, HSTS, no framing) → `assets/index-<hash>.js` → `main.tsx` mounts `<App/>`.
-2. `App` effects on start-up:
-   1. `fetch("config.json")` → `{apiUrl, environment}` (no key).
-   2. A HEAD request for each sample file, to show only the samples that exist.
-   3. No key in `sessionStorage` → `KeyDialog`. The user pastes their key → `saveSettings` → `sessionStorage["slm-key"]` (this tab only).
-3. `ApiClient.check()` → `GET /healthz` → `GET /v1/document-types`, with the browser's `OPTIONS` pre-flight first (Trace D) → 200 → "Connected" → `loadList()` → `GET /v1/extractions?limit=30` → polls unfinished jobs.
-4. The user drops a file → `Uploader.send` (≤ 25 MB) → `App.sendFiles`:
-   1. shows the job at once under a temporary id;
-   2. `ApiClient.extract(file, type, flow)`:
-      - **direct** (≤ 4 MB or forced) → `POST /v1/extractions?wait=25` (multipart) → Trace A;
-      - **upload link** → `POST /v1/extractions` (JSON) → `POST upload.url` (fields, then the file) ⇢ S3 (CORS allowed for the console's origin) → Trace C;
-   3. replaces the temporary id with the real job;
-   4. `poll(id)` → `getJob(id, wait=20)` repeatedly (Trace D) until the status is final.
-5. `JobDetail` renders:
-   - the timeline and the verdict (all checks passed / review needed, with each warning explained);
-   - read by and verified by;
-   - tokens and **AI cost** (`usage.estimated_cost_usd`), plus per-model rows;
-   - the result as tables, or the raw JSON.
-
----
-
-## Trace I: operator scripts
+## Trace H: operator scripts
 
 All scripts run **locally** with an AWS profile. `scripts/_aws.prefer_ipv4()` is called first, to avoid IPv6 hangs.
 
@@ -422,18 +396,11 @@ All scripts run **locally** with an AWS profile. `scripts/_aws.prefer_ipv4()` is
   3. `app` only: `build_lambda.build()` → upload `code/lambda-<hash>.zip` (skipped if already there);
   4. upload the template to the code bucket if it's over 51 KB;
   5. `create_change_set` → wait → print the changes → (confirm) → `execute_change_set` → wait → `print_failures` on error.
-- **`deploy_web.py prod`:**
-  1. outputs of `slm-prod-web` and `slm-prod-app`;
-  2. CORS check;
-  3. `npm ci` / `npm run build`;
-  4. write `config.json` and the samples;
-  5. upload with cache headers; delete stale files;
-  6. CloudFront `CreateInvalidation`.
 - **`smoke_test.py prod --key-file F`:** `/healthz` → 401 without a key → 200 with the key → a direct-flow statement (expects `method=parser`) → an upload-link invoice (expects Claude Haiku, total 17,700.00) → prints ✓/✗.
 
 ---
 
-## 10. Timeline of one document, end to end
+## 9. Timeline of one document, end to end
 
 A 1-page digital bank statement sent with `wait=25`, as measured on production:
 

@@ -123,7 +123,6 @@ Every resource in `infra/cloudformation/` priced with its real settings. Workloa
 | CloudTrail (`security.yaml`) | Management events: the first trail is free; ~1 GB of log files in S3 | 0.05 |
 | Lambda (`app.yaml`) | ~330,000 GB-seconds (worker ~20 s at 2 GB per document, API wait ~20 s at 1 GB) | 4.46 |
 | EventBridge, Scheduler, SNS, Budgets | AWS service events and the first 14 M schedule runs are free; email alerts free; first 2 budgets free | 0.00 |
-| Web console (`web.yaml`) | CloudFront (free tier: 1 TB and 10 M requests a month) + a ~0.2 MB private S3 bucket | ~0.00 |
 | Client API keys in Secrets Manager (`--secret-name`, optional) | USD 0.40 per stored key (e.g. `slm/prod/api-keys/lynear`) | 0.40 each |
 | **Infrastructure total (gross)** | | **USD 19.99** |
 | Lambda always-free tier (400,000 GB-s and 1 M requests a month) | | −4.46 |

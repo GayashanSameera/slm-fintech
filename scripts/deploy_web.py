@@ -2,6 +2,17 @@
 
     uv run python scripts/deploy_web.py prod --profile lyndev
 
+    # Console that works WITHOUT the user typing a key (the key is built into the site):
+    uv run python scripts/deploy_web.py prod --profile lyndev \
+        --embed-key-secret slm/prod/api-keys/lynear-console --tenant-label LYNEAR
+
+EMBEDDED KEY (owner's decision, 2026-10-14): with --embed-key-secret the key is read from
+Secrets Manager and written into the published config.json. Anyone who has the console URL
+can then use the API as that tenant: view its jobs and results, and upload documents (which
+cost money to process). Safeguards: use a key created ONLY for the console (scripts/manage_keys.py
+create ... --secret-name slm/prod/api-keys/<tenant>-console), so revoking it shuts the console off
+without touching the tenant's integration key; publish again without the option to remove it.
+
 Prerequisites: the `app` and `web` stacks are deployed (scripts/deploy.py prod app web),
 and the API allows the console's origin (CorsAllowOrigin in params/<env>.json, data
 and app blocks, = the web stack's WebOrigin output). The script warns if it doesn't.
@@ -50,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("env", choices=["dev", "prod"])
     p.add_argument("--profile")
     p.add_argument("--no-samples", action="store_true", help="Don't include the synthetic sample documents")
+    p.add_argument("--embed-key-secret", help="Secrets Manager name of an API key to BUILD INTO the site, so "
+                                              "users don't type one (see the warning in this file's docstring)")
+    p.add_argument("--tenant-label", help="Name shown in the console header, e.g. LYNEAR")
     args = p.parse_args(argv)
 
     sess = session(args.profile)
@@ -70,7 +84,14 @@ def main(argv: list[str] | None = None) -> int:
     dist = WEB / "dist"
 
     print("2/4 Writing config.json" + ("" if args.no_samples else " and sample documents"))
-    (dist / "config.json").write_text(json.dumps({"apiUrl": api_url, "environment": args.env}) + "\n")
+    config = {"apiUrl": api_url, "environment": args.env}
+    if args.embed_key_secret:
+        # The key is read at deploy time only; it is never in git or in the source code.
+        config["apiKey"] = sess.client("secretsmanager").get_secret_value(SecretId=args.embed_key_secret)["SecretString"]
+        config["tenant"] = args.tenant_label or ""
+        print(f"  WARNING: the key in {args.embed_key_secret} is BUILT INTO the site: anyone with the URL can use the "
+              f"API as {args.tenant_label or 'that tenant'}. Revoke that key to shut the console off.")
+    (dist / "config.json").write_text(json.dumps(config) + "\n")
     if not args.no_samples:
         from tests.helpers.sample_docs import make_invoice_png, make_statement_pdf
         (dist / "samples").mkdir(exist_ok=True)

@@ -141,7 +141,7 @@
 <!-- ============ 1. EXECUTIVE SUMMARY ============ -->
 <div class="section">
   <h2>1. Executive summary</h2>
-  <p class="lead">We propose a secure, fully managed platform that extracts structured data from financial documents through a simple API. <b>The platform is built and running</b> on AWS, using Amazon Bedrock for the AI step, and can be tested today through a secure web console with your own API key. It is designed around the two things that matter most to you: <b>protecting your customers' data</b> and <b>keeping running costs low and predictable</b>.</p>
+  <p class="lead">We propose a secure, fully managed platform that extracts structured data from financial documents through a simple API. <b>The platform is built and running</b> on AWS, using Amazon Bedrock for the AI step. Your systems integrate through the API. It is designed around the two things that matter most to you: <b>protecting your customers' data</b> and <b>keeping running costs low and predictable</b>.</p>
 
   <div class="tiles">
     <div class="tile"><div class="v">0</div><div class="l">documents or results kept by the AI service, or found in our logs (verified)</div></div>
@@ -197,7 +197,6 @@
     <li>Signed webhooks that notify your systems when a result is ready. They carry no document data.</li>
     <li>Field corrections endpoint, to feed back fixes and improve accuracy over time (with consent).</li>
     <li><b>AI usage and cost on every result:</b> model calls, tokens and the estimated AI cost, per document and per model, plus per-customer daily usage for billing.</li>
-    <li><b>A secure web console</b> where your team signs in with its own API key to upload documents and see results, checks, tokens and cost. Served over HTTPS only.</li>
     <li><b>API key management:</b> keys shown once and stored only as a hash; rotation and revocation (effective within a minute); keys can be delivered straight into AWS Secrets Manager.</li>
     <li>Bank-statement parsers for the most common banks in your samples, with row-by-row reconciliation and AI verification.</li>
     <li>A fully serverless deployment on AWS Lambda, defined as code (AWS CloudFormation), with dashboards, alarms and budget alerts, and an integration guide with ready-to-use Python and Node.js client code.</li>
@@ -383,7 +382,7 @@
   <table class="num">
     <tr><th>Item</th><th>What it covers</th><th class="r" style="width:22%">USD per month</th></tr>
     <tr><td><b>AI processing</b></td><td>Amazon Bedrock models, charged per token: AI verification of code-extracted statements, AI extraction of other documents, and retries on stronger models for difficult ones</td><td class="r">36</td></tr>
-    <tr><td><b>Platform infrastructure</b></td><td>API, compute, queues, database, storage, encryption keys, secrets, malware scanning, monitoring and alarms, activity log, web console</td><td class="r">12</td></tr>
+    <tr><td><b>Platform infrastructure</b></td><td>API, compute, queues, database, storage, encryption keys, secrets, malware scanning, monitoring and alarms, activity log</td><td class="r">12</td></tr>
     <tr class="total"><td>Total</td><td></td><td class="r">~50</td></tr>
     <tr><td><i>Optional</i></td><td>Web application firewall in front of the API (can be switched on with one setting)</td><td class="r">+8</td></tr>
     <tr><td><i>Optional, recommended for go-live</i></td><td>Account-wide threat detection, configuration rules, code scanning, tamper-proof log archive</td><td class="r">+10</td></tr>
@@ -433,7 +432,7 @@
   <table>
     <tr><th style="width:24%">Phase</th><th>Scope</th><th style="width:30%">Status</th></tr>
     <tr><td><b>1. Core extraction</b></td><td>Extraction pipeline, document schemas, checks, masking, row-by-row reconciliation, the bank-statement parser framework with AI verification</td><td><b>Done</b></td></tr>
-    <tr><td><b>2. Secure platform</b></td><td>AWS infrastructure as code, API, customer isolation, upload links, malware scanning, webhooks, usage and AI-cost reporting, key rotation, web console, dashboards, alarms, budgets</td><td><b>Done, running on AWS</b></td></tr>
+    <tr><td><b>2. Secure platform</b></td><td>AWS infrastructure as code, API, customer isolation, upload links, malware scanning, webhooks, usage and AI-cost reporting, key rotation, dashboards, alarms, budgets</td><td><b>Done, running on AWS</b></td></tr>
     <tr><td><b>3. Accuracy tuning</b></td><td>Your samples: parsers for the 5–8 most common banks, labelled test set, model choice per document type</td><td>Starts when samples arrive</td></tr>
     <tr><td><b>4. Go-live hardening</b></td><td>Dedicated production account, zero-retention lock, extended wait time, delivery pipeline, per-customer rate limits, threat detection and log archive, penetration test, runbooks</td><td>Planned</td></tr>
   </table>
@@ -455,7 +454,6 @@
   <ul>
     <li>30–50 anonymised sample documents per document type, for testing and accuracy measurement, including statements from the banks your customers use most.</li>
     <li>An indication of which banks' statements are most common, so parsers are built for the right banks first.</li>
-    <li>Optionally, try the platform now: we provide a console link and a test API key.</li>
     <li>Confirmation of the accuracy targets and the expected response times.</li>
     <li>Your compliance team's review of the data-handling approach in Section 4.</li>
     <li>A decision on processing hours: around the clock (recommended) or business hours only.</li>
@@ -464,7 +462,7 @@
   <h3>Next steps</h3>
   <ol class="steps">
     <li>Review this proposal and share any questions, particularly on security and cost.</li>
-    <li>Try the running platform through the web console, or integrate with the API using the integration guide.</li>
+    <li>Start integrating with the API using the integration guide and a test key.</li>
     <li>Provide sample documents; we build parsers for your most common banks and measure accuracy, speed and cost on them.</li>
     <li>Agree the go-live hardening scope and timeline.</li>
   </ol>

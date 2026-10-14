@@ -31,7 +31,9 @@ const store = {
 };
 
 export default function App() {
-  const [config, setConfig] = useState<{ apiUrl: string; environment?: string } | null>(null);
+  // config.json: the API URL, and optionally a key BUILT INTO the site (scripts/deploy_web.py
+  // --embed-key-secret). With a built-in key the console connects by itself and never asks.
+  const [config, setConfig] = useState<{ apiUrl: string; environment?: string; apiKey?: string; tenant?: string } | null>(null);
   const [settings, setSettings] = useState<Settings>({ apiUrl: "", apiKey: store.get(sessionStorage, "slm-key") || "" });
   const [connection, setConnection] = useState<{ ok: boolean; detail: string } | null>(null);
   const [askKey, setAskKey] = useState(false);
@@ -51,7 +53,10 @@ export default function App() {
       .catch(() => ({ apiUrl: "" }))
       .then((c) => {
         setConfig(c);
-        setSettings((s) => ({ ...s, apiUrl: s.apiUrl || store.get(sessionStorage, "slm-url") || c.apiUrl || "" }));
+        setSettings((s) => ({
+          apiUrl: s.apiUrl || store.get(sessionStorage, "slm-url") || c.apiUrl || "",
+          apiKey: c.apiKey || s.apiKey,          // a built-in key wins: the user is never asked
+        }));
       });
     Promise.all(SAMPLES.map((s) => fetch(`samples/${s.name}`, { method: "HEAD" }).then((r) => (r.ok ? s : null)).catch(() => null)))
       .then((found) => setAvailableSamples(found.filter(Boolean) as typeof SAMPLES));
@@ -63,8 +68,9 @@ export default function App() {
     if (!settings.apiUrl || !settings.apiKey) { setAskKey(true); return; }
     client.check().then((c) => {
       setConnection(c);
-      if (!c.ok) setAskKey(true);
-      else loadList();
+      // With a built-in key there is nothing the user could type to fix it: show the error only.
+      if (!c.ok && !config.apiKey) setAskKey(true);
+      else if (c.ok) loadList();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, config]);
@@ -191,13 +197,16 @@ export default function App() {
         <h1>Extraction Console</h1>
         {config?.environment && config.environment !== "prod" && <span className="pill">{config.environment}</span>}
         <span className="spacer" />
+        {config?.tenant && <span className="pill">{config.tenant}</span>}
         {connection && (
           <span className={`pill ${connection.ok ? "ok" : "bad"}`}>
-            {connection.ok ? `Connected · key …${settings.apiKey.slice(-4)}` : connection.detail}
+            {connection.ok ? (config?.apiKey ? "Connected" : `Connected · key …${settings.apiKey.slice(-4)}`)
+                           : (config?.apiKey ? "Access to this console has been disabled" : connection.detail)}
           </span>
         )}
-        <button type="button" onClick={() => setAskKey(true)}>API key</button>
-        {settings.apiKey && <button type="button" onClick={disconnect}>Disconnect</button>}
+        {/* Key controls only when users bring their own key (no built-in key). */}
+        {!config?.apiKey && <button type="button" onClick={() => setAskKey(true)}>API key</button>}
+        {!config?.apiKey && settings.apiKey && <button type="button" onClick={disconnect}>Disconnect</button>}
       </header>
 
       <main>
@@ -208,7 +217,7 @@ export default function App() {
         <JobDetail tracked={selected ? jobs.get(selected) : undefined} onDelete={deleteJob} />
       </main>
 
-      {askKey && config && (
+      {askKey && config && !config.apiKey && (
         <KeyDialog
           initial={settings}
           lockedUrl={Boolean(config.apiUrl)}

@@ -262,9 +262,7 @@ How to read it:
 | Secrets | Secrets Manager | API-key pepper, per-tenant webhook secrets (NFR-S9). |
 | Audit | Audit records in the `api` Lambda log group (KMS, 180-day retention) + CloudTrail trail with log-file validation (`security.yaml`) | NFR-S4, NFR-C4 |
 | Ops | CloudWatch dashboard and alarms, AWS Budgets | NFR-O4, NFR-K3 |
-| IaC | AWS CloudFormation; AWS-only, no state backend to run (5 stacks: data, security, app, observability, web) | NFR-O3 |
-| Client test console | React app on a **private** S3 bucket behind CloudFront (HTTPS, Content-Security-Policy); clients sign in with their own API key | `web.yaml` |
-| Browser access (CORS) | Off by default; in prod allowed for **exactly** the console's origin (`CorsAllowOrigin`) | |
+| IaC | AWS CloudFormation; AWS-only, no state backend to run (4 stacks: data, security, app, observability) | NFR-O3 |
 
 #### Where the code runs: everything on AWS Lambda (NFR-O5)
 
@@ -1241,7 +1239,6 @@ No Docker and no local AWS emulators are needed. What a developer uses:
 | Measure real accuracy / cost | `SLM_MODEL_PROVIDER=bedrock` with a dev AWS profile, calling Bedrock directly from a script |
 | Run the API locally | `uv run uvicorn app.main:app` with `SLM_ENV=local` (auth runs in FastAPI with the same code as the authorizer) |
 | Build the Lambda package | `uv run python scripts/build_lambda.py`: one zip of Linux ARM64 wheels + `app/`, no Docker |
-| Work on the console | `cd web && npm run dev` |
 
 The **same code** runs locally and in AWS; only `SLM_*` settings differ (NFR-O2). CI-style checks: `uv run pytest`, `uv run ruff check .`, `uvx cfn-lint`, `uvx checkov` (see `infra/cloudformation/README.md` §11).
 
@@ -1305,9 +1302,8 @@ app/                          the platform (runs in AWS Lambda; same code locall
                               parsers/ (fingerprint, base, coverage, reconcile, verify, bank/*), profiles/
   modules/chat/api.py         reserved chat routes (501)
   intake.py, webhooks.py, retention.py, usage.py, audit.py
-web/                          React + TypeScript test console (Vite), hosted by the web stack
 infra/cloudformation/         data, security, app, observability, web templates; params/; README.md
-scripts/                      build_lambda, deploy, deploy_web, create_tenant, manage_keys, smoke_test, _aws
+scripts/                      build_lambda, deploy, create_tenant, manage_keys, smoke_test, _aws
 tests/                        unit/, integration/ (end-to-end flows on moto), helpers/ (synthetic PDFs/images)
 docs/                         requirements, architecture, security, cost, bedrock guide, implementation guide,
                               implementation flow, execution flow, integration guide

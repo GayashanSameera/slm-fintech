@@ -5,7 +5,6 @@
 | Audience | Developers integrating the extraction API into another application (a client's backend) |
 | API version | `v1` |
 | Base URL (production) | `https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod` |
-| Test console (browser) | https://dcw2i73df06ry.cloudfront.net: sign in with your API key to upload documents and see results, tokens and AI cost |
 | Data location | AWS us-east-1; AI processing in the US (us-east-1/-2, us-west-2) with zero data retention |
 | Date | 2026-10-14 |
 
@@ -652,7 +651,7 @@ These steps are run by the team operating the platform, not by the client.
    - `--secret-name slm/prod/api-keys/<client>` stores the key in **AWS Secrets Manager** instead of printing it. Use this when the client's application runs in this AWS account: it reads the key at run time with `secretsmanager:GetSecretValue`. `--key-file <path>` writes it to a private file instead.
    - Never confuse it with `slm/prod/api-key-pepper`: that secret is the platform's internal hashing pepper, **not** an API key, and must never be changed.
    - Running the command again with the same name creates nothing.
-2. **Send the client this guide and the console URL** (https://dcw2i73df06ry.cloudfront.net). The console is a browser app for testing: the client signs in with their own API key, which stays in their browser tab.
+2. **Send the client this guide.**
 3. **Rotate or revoke keys** when a client asks, a key may have leaked, or someone with access leaves:
    ```bash
    uv run python scripts/manage_keys.py list   --env prod --tenant "<CLIENT NAME>" --profile lyndev

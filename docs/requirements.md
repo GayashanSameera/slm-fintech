@@ -144,7 +144,6 @@ General rules for all types:
 | FR-7.1 | Pages processed, model tokens and estimated cost are counted per tenant per day. | M |
 | FR-7.2 | Usage can be exported for billing. | S |
 | FR-7.3 | Every job response reports its AI usage: model calls, input/output/cached tokens, and the estimated AI cost in USD at list prices, in total and per model (`usage`). *(Added 2026-10-14.)* | M |
-| FR-7.4 | A browser **test console** lets a tenant upload documents with their own API key and see results, verification, tokens and AI cost. It is served over HTTPS only, and the API accepts browser calls only from its origin. *(Added 2026-10-14.)* | S |
 
 ### FR-8 Chat (reserved)
 

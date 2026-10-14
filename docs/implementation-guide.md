@@ -39,10 +39,9 @@ How a document is processed:
 
 Where it runs:
 
-- **Everything runs on AWS Lambda** in us-east-1: 7 functions from one zip package, deployed as 5 CloudFormation stacks.
-- **A React console** on S3 + CloudFront lets clients test the API with their own key.
+- **Everything runs on AWS Lambda** in us-east-1: 7 functions from one zip package, deployed as 4 CloudFormation stacks.
 
-Production lives in the `lyndev` account (`slm-prod-*` stacks). Its API is `https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod` and the console is `https://dcw2i73df06ry.cloudfront.net`.
+Production lives in the `lyndev` account (`slm-prod-*` stacks). Its API is `https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod`.
 
 ---
 
@@ -52,7 +51,6 @@ Production lives in the `lyndev` account (`slm-prod-*` stacks). Its API is `http
 |---|---|---|
 | Python | 3.12 | the platform (`app/`), scripts, tests |
 | [uv](https://docs.astral.sh/uv/) | 0.12+ | virtual env + dependencies (`uv sync`), running everything (`uv run ...`) |
-| Node.js + npm | 22 + 10 | the console (`web/`) |
 | AWS CLI v2 | latest | profiles and a few manual commands |
 | `cfn-lint`, `checkov` | via `uvx` | template checks (no install needed) |
 
@@ -62,7 +60,6 @@ First time:
 
 ```bash
 uv sync                    # creates .venv with app + dev dependencies (pytest, moto, ruff, uvicorn)
-cd web && npm ci && cd ..  # console dependencies
 uv run pytest -q           # ~150 tests, ~20 s, no AWS account needed
 ```
 
@@ -97,9 +94,8 @@ app/                                  THE PLATFORM (runs in Lambda; identical lo
 ├── modules/chat/api.py               reserved chat routes (501)
 ├── intake.py                         upload events -> queued job; scan sweeper
 ├── webhooks.py, retention.py, usage.py, audit.py
-web/                                  React + TypeScript console (Vite): src/api.ts is the API client
-infra/cloudformation/                 data/security/app/observability/web.yaml, params/<env>.json, README.md
-scripts/                              build_lambda, deploy, deploy_web, create_tenant, manage_keys, smoke_test,
+infra/cloudformation/                 data/security/app/observability.yaml, params/<env>.json, README.md
+scripts/                              build_lambda, deploy, create_tenant, manage_keys, smoke_test,
                                       _aws (shared: IPv4, session)
 tests/                                unit/, integration/test_flow_e2e.py, helpers/ (synthetic PDFs, images)
 docs/                                 this guide and the others listed at the top
@@ -116,11 +112,8 @@ docs/                                 this guide and the others listed at the to
 | Lint (must pass) | `uv run ruff check .` (`--fix` repairs import order etc.) |
 | Templates | `cd infra/cloudformation && uvx cfn-lint *.yaml --regions us-east-1 && uvx checkov -d .` |
 | Run the API locally | `SLM_ENV=local uv run uvicorn app.main:app --reload` (point SLM_* storage settings at your AWS dev resources or emulators) |
-| Console dev server | `cd web && npm run dev` (enter the API URL and a key in the dialog) |
-| Console build check | `cd web && npm run build` (type-check + bundle) |
 | Build the Lambda zip | `uv run python scripts/build_lambda.py` → `dist/lambda-<hash>.zip` |
 | Deploy | `uv run python scripts/deploy.py prod <stack…\|all> --profile lyndev` |
-| Publish the console | `uv run python scripts/deploy_web.py prod --profile lyndev` |
 | Smoke-test production | `uv run python scripts/smoke_test.py prod --profile lyndev --key-file ~/.slm/smoke.key` |
 | Onboard a client | `uv run python scripts/create_tenant.py --env prod --name "<NAME>" --profile lyndev --secret-name slm/prod/api-keys/<name>` |
 | Rotate a key | `uv run python scripts/manage_keys.py create\|list\|revoke --env prod --tenant "<NAME>" --profile lyndev` |
@@ -145,7 +138,7 @@ Every setting is an environment variable `SLM_<NAME>`, read once per process by 
 | `SLM_MAX_INLINE_BYTES`, `SLM_MAX_UPLOAD_BYTES`, `SLM_MAX_PAGES` | 4 MB, 25 MB, 20 | limits |
 | `SLM_MAX_WAIT_SECONDS` | `40` (prod sets **25**) | longest `wait`; must stay below API Gateway's integration timeout |
 | `SLM_UPLOAD_URL_TTL_SECONDS` | `900` | upload-link lifetime |
-| `SLM_CORS_ORIGINS` | empty | browser origins allowed (prod: the console's CloudFront URL) |
+| `SLM_CORS_ORIGINS` | empty | browser origins allowed to call the API (off by default; servers don't need it) |
 | `SLM_PROCESSING_WINDOW` | `always` | or e.g. `Mon-Fri 09:00-19:00 Asia/Kolkata` |
 | `SLM_DYNAMODB_ENDPOINT`, `SLM_S3_ENDPOINT`, `SLM_SQS_ENDPOINT` | none | only for local emulators; empty in AWS |
 
@@ -259,7 +252,7 @@ Anthropic models need the account's one-time **use-case form** and Marketplace s
 
 - Fields of the job object: `service.py` `PUBLIC_FIELDS`, plus `public_job`.
 - The result's fields come from the schema; `_schema_order` returns them in schema order.
-- Update `web/src/types.ts`, the integration guide (§6) and the e2e tests.
+- Update the integration guide (§6) and the e2e tests.
 
 ### 8.5 Change infrastructure
 
@@ -295,10 +288,9 @@ Things the tests can't prove (moto doesn't evaluate IAM, and the fake model can'
 1. **Build:** `scripts/build_lambda.py` packages the locked dependencies as Linux ARM64 wheels, plus `app/`, into `dist/lambda-<content-hash>.zip` (~48 MB; Lambda's limit is 250 MB unpacked). An identical build produces an identical file name, so an unchanged release changes nothing.
 2. **Deploy:** `scripts/deploy.py prod app --profile lyndev`.
    - It lints, uploads the zip to the code bucket, creates a change set, shows it, executes it and waits.
-   - Stack order for a fresh environment: `data → security → app → observability`, plus `web`.
-3. **Console:** `scripts/deploy_web.py prod`. It builds `web/`, writes `config.json` with the API URL (never a key), adds the synthetic samples, uploads, and invalidates CloudFront.
-4. **Verify:** `scripts/smoke_test.py prod --key-file ~/.slm/smoke.key`. It uses the dedicated `SMOKE-TEST` tenant.
-5. **Roll back:** check out the previous commit and run `deploy.py prod app` again (old zips stay in the code bucket for 90 days). If a stack update fails, CloudFormation rolls back by itself.
+   - Stack order for a fresh environment: `data → security → app → observability`.
+3. **Verify:** `scripts/smoke_test.py prod --key-file ~/.slm/smoke.key`. It uses the dedicated `SMOKE-TEST` tenant.
+4. **Roll back:** check out the previous commit and run `deploy.py prod app` again (old zips stay in the code bucket for 90 days). If a stack update fails, CloudFormation rolls back by itself.
 
 ---
 
@@ -311,10 +303,9 @@ Things the tests can't prove (moto doesn't evaluate IAM, and the fake model can'
 | Text reconciliation of every statement row (parser and AI) | ✅ |
 | Nova Lite independent verification (read-and-compare) | ✅ measured on real Bedrock |
 | AI ladder on Bedrock (Nova Lite, Haiku 5.5, Sonnet 5.5) | ✅ request formats confirmed on Bedrock |
-| Token usage + estimated AI cost per job | ✅ in the API and the console |
+| Token usage + estimated AI cost per job | ✅ in the API |
 | Per-request audit, exact retention, key rotation/revocation | ✅ |
 | Infrastructure: 5 stacks in `lyndev` prod, KMS, GuardDuty, alarms, budget | ✅ (WAF switched **off** on 2026-10-14 to save cost: `EnableWaf` in `params/prod.json`) |
-| React console on S3 + CloudFront (HTTPS, CSP) | ✅ |
 | Alert email for alarms | ⛔ not set (`AlertEmail` in `params/prod.json`) |
 | Bedrock data-retention mode `none` | ⛔ not set (account-wide decision) |
 | API Gateway timeout quota (wait 25 s → 40 s) | ⛔ to request |
