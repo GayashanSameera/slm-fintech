@@ -116,7 +116,7 @@ The serverless resources are in **`app.yaml`**: the 7 Lambda functions, their tr
 
 ## 4. The four stacks, resource by resource
 
-Deploy order is **data → security → app → observability** (`deploy.py` builds and uploads the code zip for `app`). Each stack imports values exported by the ones before it.
+Deploy order is **data → security → app → observability**, plus **web** (independent) for the client console (`deploy.py` builds and uploads the code zip for `app`). Each stack imports values exported by the ones before it.
 
 ### 4.1 `data.yaml`: everything that stores something (stack `slm-<env>-data`)
 
@@ -199,6 +199,22 @@ Every role is named `slm-<env>-fn-<name>`. The tenant-data role trusts exactly t
 | `SecurityChangeRule` | CloudTrail events | **instantly** when someone turns on Bedrock invocation logging (it would copy documents into logs), or disables or schedules deletion of a KMS key |
 | `MonthlyBudget` | the AWS bill | 80% and 100% of the budget, and a forecast over 100% |
 | `Dashboard` `slm-<env>` | one page: API traffic, worker health, queue depths, DLQs | |
+
+
+### 4.5 `web.yaml`: the test console for clients (stack `slm-<env>-web`)
+
+A React app (`web/`) that clients open in a browser to upload documents and see results, tokens and AI cost. Each client signs in with **their own** API key, which stays in their browser tab.
+
+| Resource | What it does |
+|---|---|
+| `WebBucket` | **Private** bucket with the built app. Nothing in it is public |
+| `WebOriginAccessControl` + `WebBucketPolicy` | Only this CloudFront distribution may read the bucket |
+| `WebDistribution` | Serves the app over **HTTPS only** at `https://<id>.cloudfront.net` |
+| `WebSecurityHeaders` | Content-Security-Policy (the page may only talk to API Gateway and S3), HSTS, no framing, no MIME sniffing, no referrer |
+
+Publish a new version with `uv run python scripts/deploy_web.py prod --profile <profile>`. It builds the app, writes `config.json` (the API URL only, never a key), uploads, and clears the CloudFront cache.
+
+The API only accepts browser calls from the console's address: `CorsAllowOrigin` in `params/<env>.json` (data and app blocks) is set to the web stack's `WebOrigin` output.
 
 ---
 
@@ -422,7 +438,7 @@ When you add a skip, write **why** next to it.
 Delete in **reverse** order (an export can't disappear while another stack still imports it):
 
 ```bash
-for s in observability app security data; do
+for s in web observability app security data; do
   aws cloudformation delete-stack --stack-name slm-dev-$s
   aws cloudformation wait stack-delete-complete --stack-name slm-dev-$s
 done

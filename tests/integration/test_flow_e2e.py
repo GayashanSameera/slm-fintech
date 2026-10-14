@@ -115,6 +115,11 @@ def test_direct_flow_end_to_end(client, tenant, fake_gateway):
     body = client.get(f"/v1/extractions/{job['id']}", headers=_auth(api_key)).json()
     assert body["status"] == "succeeded" and body["method"] == "ai"
     assert body["result"]["total"] == "1180.00"
+    # Fields come back in the schema's documented order (DynamoDB itself doesn't keep order).
+    from app.modules.extraction.schemas.invoice import Invoice
+    assert list(body["result"]) == list(Invoice.model_fields)
+    assert list(body["usage"]) == ["model_calls", "input_tokens", "output_tokens", "cache_read_tokens",
+                                   "estimated_cost_usd", "by_model"]
     assert body["result"]["seller"]["pan"] == "XXXXXX234F"            # stage 11: masked
     assert body["page_count"] == 1 and body["model_id"].startswith("us.anthropic.claude-haiku")
     # Token usage of the job (FakeGateway reports 100 in / 50 out per call): one Haiku call.

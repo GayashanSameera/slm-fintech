@@ -4,7 +4,8 @@
 |---|---|
 | Audience | Developers integrating the extraction API into another application (a client's backend) |
 | API version | `v1` |
-| Base URL (production) | `{{BASE_URL}}` |
+| Base URL (production) | `https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod` |
+| Test console (browser) | https://dcw2i73df06ry.cloudfront.net: sign in with your API key to upload documents and see results, tokens and AI cost |
 | Data location | AWS us-east-1; AI processing in the US (us-east-1/-2, us-west-2) with zero data retention |
 | Date | 2026-10-14 |
 
@@ -42,7 +43,7 @@ The API turns financial documents into structured JSON:
 ## 1. Quick start
 
 ```bash
-export SLM_API=https://...execute-api.us-east-1.amazonaws.com/prod     # your base URL
+export SLM_API=https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod
 export SLM_KEY=slm_live_...                                             # your API key
 
 # Send a bank statement (≤ 4 MB) and wait up to 25 s for the result in the same response:
@@ -278,8 +279,9 @@ Lists every supported type with its **JSON Schema** and `schema_version`. Use it
   "result": { "...": "see section 7" },
   "usage": {
     "model_calls": 1, "input_tokens": 2511, "output_tokens": 145, "cache_read_tokens": 0,
-    "by_model": [ { "model_id": "us.amazon.nova-lite-v1:0", "calls": 1,
-                    "input_tokens": 2511, "output_tokens": 145, "cache_read_tokens": 0 } ]
+    "estimated_cost_usd": 0.000185,
+    "by_model": [ { "model_id": "us.amazon.nova-lite-v1:0", "calls": 1, "input_tokens": 2511,
+                    "output_tokens": 145, "cache_read_tokens": 0, "estimated_cost_usd": 0.000185 } ]
   },
   "created_at": "2026-10-14T10:15:02Z",
   "completed_at": "2026-10-14T10:15:09Z"
@@ -298,7 +300,7 @@ Lists every supported type with its **JSON Schema** and `schema_version`. Use it
 | `model_id` | AI method only: the model that produced the result |
 | `warnings` | Codes for anything you should review (section 8). Empty means every check passed |
 | `result` | The extracted data (section 7). Fields not found are `null`; lists are `[]` |
-| `usage` | AI tokens used for this job: totals and per model. Includes failed jobs that called a model. `0` calls for checks-only parser results |
+| `usage` | AI tokens used for this job, in total and per model, plus `estimated_cost_usd`: the AI cost at AWS Bedrock list prices (model tokens only; an estimate, your invoice is the reference). Includes failed jobs that called a model. `0` calls for checks-only parser results |
 | `error` | `failed` only: `{"code": "..."}` (section 10) |
 | `deduplicated` | `true` when this answer came from an earlier identical upload (no new tokens used) |
 | `processing_starts_at` | Only if a processing window is configured and currently closed |
@@ -550,7 +552,7 @@ class ExtractionClient:
         return job
 
 
-client = ExtractionClient("https://...execute-api.us-east-1.amazonaws.com/prod", api_key="slm_live_...")
+client = ExtractionClient("https://0vtusv00e4.execute-api.us-east-1.amazonaws.com/prod", api_key="slm_live_...")
 job = client.extract("statement.pdf", document_type="bank_statement")
 if job["status"] == "succeeded" and not job["warnings"]:
     for row in job["result"]["transactions"]:
@@ -648,7 +650,7 @@ These steps are run by the team operating the platform, not by the client.
    ```
    - The API key (and the webhook secret, if you passed a webhook URL) is printed **once**. Pass it to the client over a secure channel. `--key-file <path>` writes it to a private file instead of printing it.
    - Running the command again with the same name creates nothing.
-2. **Send the client this guide,** with the base URL filled in.
+2. **Send the client this guide and the console URL** (https://dcw2i73df06ry.cloudfront.net). The console is a browser app for testing: the client signs in with their own API key, which stays in their browser tab.
 3. **Rotate or revoke keys** when a client asks, a key may have leaked, or someone with access leaves:
    ```bash
    uv run python scripts/manage_keys.py list   --env prod --tenant "<CLIENT NAME>" --profile lyndev

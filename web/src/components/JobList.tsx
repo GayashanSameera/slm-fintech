@@ -43,7 +43,8 @@ export function JobList({ jobs, selected, onSelect, onRefresh }: Props) {
             <div className="meta">
               {[t.job.document_type && humanize(t.job.document_type),
                 t.job.method === "parser" ? "parser" : t.job.method === "ai" ? "AI" : "",
-                t.job.usage ? usd(t.job.usage.estimated_cost_usd) : "",
+                // Jobs from before costs were reported have no estimate: show nothing, not "USD 0".
+                t.job.usage?.estimated_cost_usd !== undefined ? usd(t.job.usage.estimated_cost_usd) : "",
                 duration(t.startedAt, t.finishedAt)].filter(Boolean).join(" · ")}
             </div>
           </button>

@@ -92,17 +92,45 @@ PUBLIC_FIELDS = (
 )
 
 
+_USAGE_ORDER = ("model_calls", "input_tokens", "output_tokens", "cache_read_tokens", "estimated_cost_usd", "by_model")
+_MODEL_USAGE_ORDER = ("model_id", "calls", "input_tokens", "output_tokens", "cache_read_tokens", "estimated_cost_usd")
+
+
+def _in_order(data: dict, order: tuple) -> dict:
+    return {k: data[k] for k in order if k in data} | {k: v for k, v in data.items() if k not in order}
+
+
+def _schema_order(doc_type: str | None, result: dict) -> dict:
+    """Return the result with its fields in the schema's order (invoice_number, invoice_date, ...).
+
+    DynamoDB does not keep the order of a map's keys, so a stored result comes back
+    shuffled. Re-reading it through its own schema restores the documented order for
+    every client. The values are the ones the schema produced in the first place, so
+    nothing changes but the order; anything unexpected is returned as stored.
+    """
+    spec = REGISTRY.get(doc_type or "")
+    if spec is None:
+        return result
+    try:
+        return spec.model.model_validate(result).model_dump(mode="json")
+    except ValueError:
+        return result
+
+
 def public_job(job: dict, blobs: Blobs | None = None) -> dict:
     """The JSON a tenant sees for a job. Internal fields (PK/SK, TTL...) are not exposed."""
     out = {k: job.get(k) for k in PUBLIC_FIELDS if job.get(k) is not None}
     out.setdefault("document_type", job.get("requested_doc_type") or "auto")
     out.setdefault("warnings", [])
+    if isinstance(out.get("usage"), dict):
+        out["usage"] = _in_order(out["usage"], _USAGE_ORDER)
+        out["usage"]["by_model"] = [_in_order(m, _MODEL_USAGE_ORDER) for m in out["usage"].get("by_model", [])]
     if job.get("status") == "succeeded":
         if "result" in job:
-            out["result"] = job["result"]
+            out["result"] = _schema_order(job.get("document_type"), job["result"])
         elif job.get("result_key") and blobs is not None:
             import json
-            out["result"] = json.loads(blobs.get(job["result_key"]))
+            out["result"] = _schema_order(job.get("document_type"), json.loads(blobs.get(job["result_key"])))
     if job.get("status") == "failed":
         out["error"] = {"code": job.get("error_code", "processing_error")}
     return out

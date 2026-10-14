@@ -105,11 +105,11 @@ export function JobDetail({ tracked, onDelete }: Props) {
     ["Status", <StatusPill status={localError ? "failed" : job.status} />],
     ["Document type", job.document_type ? <>{humanize(job.document_type)}{job.document_type_source && <span className="muted"> ({job.document_type_source})</span>}</> : "—"],
     ["Read by", job.method === "parser" ? <>Python parser <span className="mono">{job.parser_id}</span></> : job.method === "ai" ? <>AI · {modelName(job.model_id)}</> : "—"],
-    ["Verified by", job.method === "parser" ? (job.verified_by ? modelName(job.verified_by) : "checks only (no AI)") : job.method === "ai" ? "consistency + text checks" : "—"],
+    ["Verified by", job.method === "parser" ? (job.verified_by ? modelName(job.verified_by) : "checks only (no AI)") : job.method === "ai" ? (job.document_type === "bank_statement" ? "arithmetic + text reconciliation" : "consistency checks") : "—"],
     ["Pages", job.page_count ?? "—"],
     ["Time", duration(tracked.startedAt, tracked.finishedAt) || "—"],
     ["Tokens", u ? <>{number(u.input_tokens)} in · {number(u.output_tokens)} out<div className="muted small">{u.model_calls} model call{u.model_calls === 1 ? "" : "s"}{u.cache_read_tokens ? ` · ${number(u.cache_read_tokens)} cached` : ""}{job.deduplicated ? " · from an earlier identical upload" : ""}</div></> : "—"],
-    ["AI cost", u ? <>{usd(u.estimated_cost_usd)}<div className="muted small">{u.estimated_cost_usd
+    ["AI cost", u?.estimated_cost_usd !== undefined ? <>{usd(u.estimated_cost_usd)}<div className="muted small">{u.estimated_cost_usd
         ? `≈ USD ${(u.estimated_cost_usd * 1000).toFixed(2)} per 1,000 documents like this` : "no AI model was called"}
         {job.deduplicated ? " · not charged again (earlier identical upload)" : ""}</div></> : "—"],
     ["Job id", <span className="mono small">{job.id}</span>],
